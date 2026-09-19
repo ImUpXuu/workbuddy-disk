@@ -2,9 +2,9 @@
 
 ## 一、访问地址
 
-**https://你的域名**
+**https://your-backend.example.com**
 
-访问密钥：`change-me`
+访问密钥：由 `NETDISK_KEY` 环境变量注入
 
 ---
 
@@ -40,7 +40,7 @@
 
 ```bash
 # 方式一：查询参数（推荐，线上唯一可靠的方式）
-curl "https://你的域名/api/list?apikey=你的KEY"
+curl "https://your-backend.example.com/api/list?apikey=你的KEY"
 
 # 方式二：请求头（本地/内网直连可用）
 curl -H "X-API-Key: 你的KEY" "https://.../api/list"
@@ -75,7 +75,7 @@ curl -H "X-API-Key: 你的KEY" "https://.../api/list"
 
 ```bash
 KEY="ndk_xxxxxxxxxx_yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
-BASE="https://你的域名"
+BASE="https://your-backend.example.com"
 
 # 列出根目录
 curl "$BASE/api/list?apikey=$KEY"
@@ -93,6 +93,53 @@ curl -X POST "$BASE/api/delete?apikey=$KEY" \
   -H 'Content-Type: application/json' \
   -d '{"paths":["old.txt"]}'
 ```
+
+---
+
+## 三·五、前端（Vercel）接入要点
+
+前端部署在 **`https://pan.upxuu.com`**，与后端不同源，因此：
+
+### 1. 跨域已由后端放行
+
+白名单内置了正式域名与本地开发地址：
+
+```
+https://pan.upxuu.com
+https://www.pan.upxuu.com
+http://localhost:5173      # vite dev
+http://localhost:4173      # vite preview
+```
+
+需要改动时用环境变量覆盖（逗号分隔）：
+
+```bash
+export NETDISK_CORS_ORIGINS='https://pan.upxuu.com,https://your-preview.vercel.app'
+```
+
+> 预检 `OPTIONS` 在鉴权之前就会返回 `204`。这点很关键——如果预检被鉴权拦成 `401`，
+> 浏览器会直接判定跨域失败，真正的请求根本不会发出，控制台只会看到一条
+> `CORS` 报错而看不到 `401`，非常容易误判。
+
+### 2. 凭证怎么带
+
+前端走 **API Key 通道**，key 存在 `localStorage`，请求统一加一个头：
+
+```js
+fetch(`${BASE}/api/list?path=`, {
+  headers: { 'X-API-Key': localStorage.getItem('netdisk_key') },
+})
+```
+
+- `X-API-Key` 已列入 `Access-Control-Allow-Headers`，可以直接跨域使用
+- 后端 `Authorization` 通道虽然可用，但部分反向网关会用自签 JWT 覆盖该头，**不建议**前端依赖它
+- 没有 key 时也可用登录换取 token，再以 `?token=` 传递；但跨站 Cookie（`SameSite=Lax`）不可靠，不要作为主通道
+
+### 3. 上传的跨域细节
+
+- 分片走 `multipart/form-data`，`Content-Type` 由浏览器自动带 boundary，**不要手动设置**
+- 大文件分片后单请求体需小于网关限制（约 50MB），前端取 48MB
+- 响应头 `Content-Range` / `Accept-Ranges` / `Content-Length` 已暴露，断点续传可正常读取
 
 ---
 
