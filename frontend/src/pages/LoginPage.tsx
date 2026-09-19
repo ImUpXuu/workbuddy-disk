@@ -14,6 +14,7 @@ import { useAuth } from '../context/AuthContext'
 import { useToast } from '../context/ToastContext'
 import { api, API_BASE, ApiError } from '../api/client'
 import { Button, Icon, ICONS, Input } from '../components/ui'
+import { cn } from '../lib/utils'
 
 type Tab = 'apikey' | 'login'
 
@@ -67,19 +68,20 @@ export default function LoginPage() {
     <div className="flex min-h-dvh items-center justify-center px-4 py-10">
       <div className="w-full max-w-sm">
         {/* 品牌 */}
-        <div className="mb-6 flex flex-col items-center gap-2 text-center">
-          <div className="grid size-14 place-items-center rounded-2xl bg-white/80 shadow-[var(--shadow-card)] backdrop-blur">
-            <Icon d={ICONS.cloud} className="size-7 text-[--color-brand-500]" strokeWidth={1.8} />
+        <div className="mb-7 flex flex-col items-center gap-3 text-center">
+          <div className="icon-disc size-16">
+            <Icon d={ICONS.cloud} className="size-8 text-[--color-sky-500]" strokeWidth={2} />
           </div>
-          <h1 className="text-xl font-extrabold tracking-tight text-[--color-ink]">
+          <h1 className="text-2xl font-black tracking-tight text-[--color-sky-600]">
             WorkBuddy Disk
           </h1>
-          <p className="text-xs text-[--color-ink-soft]">轻量自托管网盘</p>
+          <p className="text-xs font-bold tracking-wide text-slate-400">轻量自托管网盘</p>
         </div>
 
-        <div className="card p-5">
+        {/* 表单卡片：笔绘风 */}
+        <div className="cute-border p-5">
           {/* 通道切换 */}
-          <div className="mb-4 grid grid-cols-2 gap-1 rounded-full bg-slate-100/80 p-1">
+          <div className="mb-4 flex gap-2">
             {([
               ['apikey', 'API Key'],
               ['login', '登录密钥'],
@@ -91,19 +93,19 @@ export default function LoginPage() {
                   setTab(id)
                   setLocalError('')
                 }}
-                className={
-                  'rounded-full px-3 py-1.5 text-xs font-bold transition-colors ' +
-                  (tab === id
-                    ? 'bg-white text-[--color-brand-700] shadow-sm'
-                    : 'text-[--color-ink-soft] hover:text-[--color-ink]')
-                }
+                className={cn(
+                  'flex-1 rounded-full border-2 px-3 py-1.5 text-xs font-bold transition-colors',
+                  tab === id
+                    ? 'border-[--color-sky-400] bg-[--color-sky-400] text-white'
+                    : 'border-[--color-sky-200] bg-white text-[--color-sky-600] hover:border-[--color-sky-400]',
+                )}
               >
                 {label}
               </button>
             ))}
           </div>
 
-          <form onSubmit={handleSubmit} className="flex flex-col gap-3.5">
+          <form onSubmit={handleSubmit} className="flex flex-col gap-4">
             {tab === 'apikey' ? (
               <div className="relative">
                 <Input
@@ -121,7 +123,7 @@ export default function LoginPage() {
                 <button
                   type="button"
                   onClick={() => setShowSecret((v) => !v)}
-                  className="absolute right-2.5 bottom-2.5 rounded-full p-1 text-[--color-ink-faint] transition-colors hover:text-[--color-ink]"
+                  className="absolute right-3 bottom-2.5 text-[--color-ink-faint] transition-colors hover:text-[--color-sky-600]"
                   aria-label={showSecret ? '隐藏' : '显示'}
                 >
                   <Icon d={showSecret ? ICONS.eyeOff : ICONS.eye} className="size-4" />
@@ -141,28 +143,28 @@ export default function LoginPage() {
             )}
 
             {shownError && (
-              <div className="flex items-start gap-2 rounded-xl bg-rose-50 px-3 py-2.5 text-xs leading-snug text-rose-700">
+              <div className="flex items-start gap-2 rounded-xl border-2 border-red-200 bg-red-50 px-3 py-2.5 text-xs leading-snug font-bold text-red-700">
                 <Icon d={ICONS.info} className="mt-px size-3.5 shrink-0" />
                 <span className="break-words">{shownError}</span>
               </div>
             )}
 
-            <Button type="submit" variant="primary" loading={busy} className="w-full">
+            <Button type="submit" variant="primary" loading={busy} className="w-full !py-2.5">
               {busy ? '连接中…' : '连接'}
             </Button>
           </form>
 
-          <p className="mt-4 text-[11px] leading-relaxed text-[--color-ink-faint]">
+          <p className="mt-4 text-[11px] leading-relaxed font-medium text-slate-400">
             {tab === 'apikey'
               ? 'API Key 保存在本机浏览器，之后所有请求自动携带，不会上传到任何第三方。'
               : '登录密钥用于换取临时凭证。服务重启后需要重新登录。'}
           </p>
         </div>
 
-        {/* 后端地址，便于排查配置问题 */}
-        <p className="mt-4 text-center text-[11px] text-[--color-ink-faint]">
+        {/* 后端地址 */}
+        <p className="mt-5 text-center text-[11px] font-medium text-slate-400">
           后端：
-          <code className="ml-1 rounded bg-white/70 px-1.5 py-0.5 font-mono">
+          <code className="ml-1 rounded-md bg-white px-1.5 py-0.5 font-mono">
             {API_BASE || window.location.origin}
           </code>
         </p>

@@ -1,7 +1,9 @@
 /**
  * 基础 UI 组件集合。
  *
- * 都是无状态的小件，集中在一个文件里便于保持一致性与复用。
+ * 视觉规范见 index.css 的「笔绘风格组件」区块。
+ * 统一风格的关键：所有可交互元素都带 2px 描边 + 硬阴影，
+ * 悬停浮起、按下压平。
  */
 
 import {
@@ -19,19 +21,9 @@ import { cn } from '../lib/utils'
 
 export function Spinner({ className }: { className?: string }) {
   return (
-    <svg
-      viewBox="0 0 24 24"
-      className={cn('size-4 animate-spin', className)}
-      fill="none"
-      aria-hidden
-    >
+    <svg viewBox="0 0 24 24" className={cn('size-4 animate-spin', className)} fill="none" aria-hidden>
       <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="3" opacity="0.25" />
-      <path
-        d="M21 12a9 9 0 0 0-9-9"
-        stroke="currentColor"
-        strokeWidth="3"
-        strokeLinecap="round"
-      />
+      <path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
     </svg>
   )
 }
@@ -44,12 +36,14 @@ interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: 'primary' | 'ghost' | 'danger'
   loading?: boolean
   icon?: ReactNode
+  size?: 'sm' | 'md'
 }
 
 export function Button({
   variant = 'ghost',
   loading = false,
   icon,
+  size = 'md',
   children,
   className,
   disabled,
@@ -63,6 +57,7 @@ export function Button({
         variant === 'primary' && 'btn-primary',
         variant === 'ghost' && 'btn-ghost',
         variant === 'danger' && 'btn-danger',
+        size === 'sm' && '!px-3 !py-1.5 !text-xs',
         className,
       )}
       disabled={disabled || loading}
@@ -88,7 +83,7 @@ export function Input({ label, hint, className, id, ...rest }: InputProps) {
   return (
     <div className="flex flex-col gap-1.5">
       {label && (
-        <label htmlFor={inputId} className="text-xs font-bold text-[--color-ink-soft]">
+        <label htmlFor={inputId} className="text-xs font-bold text-[--color-sky-600]">
           {label}
         </label>
       )}
@@ -99,7 +94,7 @@ export function Input({ label, hint, className, id, ...rest }: InputProps) {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// 开关
+// 开关：描边 + 硬阴影风格
 // ═══════════════════════════════════════════════════════════════════
 
 interface SwitchProps {
@@ -108,7 +103,6 @@ interface SwitchProps {
   label: string
   hint?: string
   disabled?: boolean
-  /** 打开时是否用危险色（用于「允许危险操作」这种反向语义） */
   danger?: boolean
 }
 
@@ -128,19 +122,19 @@ export function Switch({ checked, onChange, label, hint, disabled, danger }: Swi
         disabled={disabled}
         onClick={() => onChange(!checked)}
         className={cn(
-          'relative mt-0.5 h-6 w-11 shrink-0 rounded-full transition-colors',
+          'relative mt-0.5 h-7 w-12 shrink-0 rounded-full border-2 transition-colors',
           'disabled:cursor-not-allowed disabled:opacity-50',
           checked
             ? danger
-              ? 'bg-amber-500'
-              : 'bg-[--color-brand-500]'
-            : 'bg-slate-300',
+              ? 'border-amber-400 bg-amber-400'
+              : 'border-[--color-sky-400] bg-[--color-sky-400]'
+            : 'border-slate-300 bg-slate-200',
         )}
       >
         <span
           className={cn(
-            'absolute top-0.5 size-5 rounded-full bg-white shadow-sm transition-transform',
-            checked ? 'translate-x-[1.375rem]' : 'translate-x-0.5',
+            'absolute top-[1px] size-5 rounded-full bg-white shadow-sm transition-transform',
+            checked ? 'translate-x-[1.375rem]' : 'translate-x-[1px]',
           )}
         />
       </button>
@@ -149,7 +143,7 @@ export function Switch({ checked, onChange, label, hint, disabled, danger }: Swi
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// 模态框
+// 模态框：笔绘卡片
 // ═══════════════════════════════════════════════════════════════════
 
 interface ModalProps {
@@ -158,14 +152,12 @@ interface ModalProps {
   title: string
   children: ReactNode
   footer?: ReactNode
-  /** 宽度档位 */
   size?: 'sm' | 'md' | 'lg'
 }
 
 export function Modal({ open, onClose, title, children, footer, size = 'md' }: ModalProps) {
   const panelRef = useRef<HTMLDivElement>(null)
 
-  // Esc 关闭 + 锁滚动
   useEffect(() => {
     if (!open) return
 
@@ -176,8 +168,6 @@ export function Modal({ open, onClose, title, children, footer, size = 'md' }: M
 
     const prevOverflow = document.body.style.overflow
     document.body.style.overflow = 'hidden'
-
-    // 打开后把焦点移到面板，键盘用户不会丢失上下文
     panelRef.current?.focus()
 
     return () => {
@@ -190,9 +180,8 @@ export function Modal({ open, onClose, title, children, footer, size = 'md' }: M
 
   return (
     <div className="fixed inset-0 z-[80] flex items-center justify-center p-4">
-      {/* 遮罩：点击关闭 */}
       <div
-        className="absolute inset-0 bg-slate-900/25 backdrop-blur-[2px] animate-[fade-in_140ms_ease-out]"
+        className="absolute inset-0 bg-slate-900/25 animate-[fade-in_140ms_ease-out]"
         onClick={onClose}
         aria-hidden
       />
@@ -204,19 +193,22 @@ export function Modal({ open, onClose, title, children, footer, size = 'md' }: M
         aria-label={title}
         tabIndex={-1}
         className={cn(
-          'relative w-full rounded-3xl border border-white/90 bg-white/95 shadow-[0_24px_60px_-20px_rgb(15_23_42/0.35)]',
-          'backdrop-blur-xl animate-[modal-in_180ms_ease-out] focus:outline-none',
+          'relative w-full bg-white focus:outline-none',
+          // 笔绘卡片：2px 描边 + 硬阴影 + 大圆角
+          'border-2 border-[--color-sky-400] rounded-3xl',
+          'shadow-[6px_6px_0_var(--color-sky-400)]',
+          'animate-[modal-in_180ms_ease-out]',
           size === 'sm' && 'max-w-sm',
           size === 'md' && 'max-w-lg',
           size === 'lg' && 'max-w-2xl',
         )}
       >
-        <header className="flex items-center justify-between gap-4 border-b border-slate-100 px-5 py-4">
-          <h2 className="text-base font-extrabold text-[--color-ink]">{title}</h2>
+        <header className="flex items-center justify-between gap-4 border-b-2 border-[--color-sky-100] px-5 py-4">
+          <h2 className="text-base font-black text-[--color-ink]">{title}</h2>
           <button
             type="button"
             onClick={onClose}
-            className="rounded-full p-1.5 text-[--color-ink-faint] transition-colors hover:bg-slate-100 hover:text-[--color-ink]"
+            className="grid size-8 place-items-center rounded-full border-2 border-[--color-sky-200] bg-white text-[--color-ink-soft] transition-colors hover:border-[--color-sky-400] hover:text-[--color-sky-600]"
             aria-label="关闭"
           >
             <svg viewBox="0 0 24 24" className="size-4" fill="none" stroke="currentColor" strokeWidth={2.5}>
@@ -228,7 +220,7 @@ export function Modal({ open, onClose, title, children, footer, size = 'md' }: M
         <div className="max-h-[70vh] overflow-y-auto px-5 py-4">{children}</div>
 
         {footer && (
-          <footer className="flex items-center justify-end gap-2 border-t border-slate-100 px-5 py-3.5">
+          <footer className="flex items-center justify-end gap-2 border-t-2 border-[--color-sky-100] px-5 py-3.5">
             {footer}
           </footer>
         )}
@@ -253,26 +245,26 @@ export function EmptyState({
   action?: ReactNode
 }) {
   return (
-    <div className="flex flex-col items-center justify-center gap-2 px-6 py-16 text-center">
-      <span className="text-4xl opacity-60" aria-hidden>
+    <div className="flex flex-col items-center justify-center gap-3 px-6 py-16 text-center">
+      <span className="icon-disc size-14 text-2xl" aria-hidden>
         {icon}
       </span>
-      <p className="text-sm font-bold text-[--color-ink-soft]">{title}</p>
-      {hint && <p className="max-w-xs text-xs leading-relaxed text-[--color-ink-faint]">{hint}</p>}
-      {action && <div className="mt-2">{action}</div>}
+      <p className="text-sm font-black text-[--color-ink]">{title}</p>
+      {hint && <p className="max-w-xs text-xs leading-relaxed text-[--color-ink-soft]">{hint}</p>}
+      {action && <div className="mt-1">{action}</div>}
     </div>
   )
 }
 
 export function SkeletonRows({ rows = 6 }: { rows?: number }) {
   return (
-    <div className="flex flex-col gap-1.5 p-1.5">
+    <div className="flex flex-col gap-2 p-2">
       {Array.from({ length: rows }).map((_, i) => (
-        <div key={i} className="flex items-center gap-3 rounded-xl px-3 py-2.5">
-          <div className="skeleton size-8 shrink-0" />
-          <div className="flex-1 space-y-1.5">
+        <div key={i} className="flex items-center gap-3 rounded-2xl px-3 py-2.5">
+          <div className="skeleton size-9 shrink-0 rounded-full" />
+          <div className="flex-1 space-y-2">
             <div className="skeleton h-3" style={{ width: `${45 + ((i * 13) % 35)}%` }} />
-            <div className="skeleton h-2.5 w-24 opacity-60" />
+            <div className="skeleton h-2.5 w-24" />
           </div>
         </div>
       ))}
@@ -295,13 +287,13 @@ export function ProgressBar({
 }) {
   const pct = Math.max(0, Math.min(1, value)) * 100
   return (
-    <div className={cn('h-1.5 w-full overflow-hidden rounded-full bg-slate-200/80', className)}>
+    <div className={cn('h-2 w-full overflow-hidden rounded-full bg-slate-200', className)}>
       <div
         className={cn(
           'h-full rounded-full transition-[width] duration-200 ease-out',
-          tone === 'brand' && 'bg-[--color-brand-500]',
-          tone === 'success' && 'bg-emerald-500',
-          tone === 'danger' && 'bg-rose-500',
+          tone === 'brand' && 'bg-[--color-sky-400]',
+          tone === 'success' && 'bg-emerald-400',
+          tone === 'danger' && 'bg-rose-400',
         )}
         style={{ width: `${pct}%` }}
       />
@@ -310,7 +302,7 @@ export function ProgressBar({
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// 图标按钮
+// 图标按钮：圆形描边，悬停浮起
 // ═══════════════════════════════════════════════════════════════════
 
 export function IconButton({
@@ -334,10 +326,10 @@ export function IconButton({
       disabled={disabled}
       onClick={onClick}
       className={cn(
-        'grid size-8 place-items-center rounded-full transition-colors disabled:opacity-40',
+        'grid size-8 place-items-center rounded-full border-2 bg-white transition-colors disabled:opacity-40',
         tone === 'default'
-          ? 'text-[--color-ink-faint] hover:bg-slate-100 hover:text-[--color-brand-600]'
-          : 'text-[--color-ink-faint] hover:bg-rose-50 hover:text-rose-600',
+          ? 'border-[--color-sky-200] text-[--color-sky-600] hover:border-[--color-sky-400] hover:bg-[--color-sky-50]'
+          : 'border-red-200 text-red-500 hover:border-red-400 hover:bg-red-50',
       )}
     >
       {children}
@@ -392,4 +384,9 @@ export const ICONS = {
   shield: 'M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z',
   cloud: 'M17.5 19a4.5 4.5 0 0 0 .5-8.97A6 6 0 0 0 6.3 9.5 4.5 4.5 0 0 0 6.5 19Z',
   info: 'M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20ZM12 16v-4M12 8h.01',
+  image: 'M3 3h18v18H3zM8.5 10a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3ZM21 15l-5-5L5 21',
+  file: 'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8ZM14 2v6h6',
+  folder: 'M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z',
+  chevronRight: 'M9 18l6-6-6-6',
+  back: 'M19 12H5M12 19l-7-7 7-7',
 } as const

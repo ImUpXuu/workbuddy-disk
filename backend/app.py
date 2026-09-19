@@ -69,10 +69,22 @@ UPLOAD_SESSION_TTL = 24 * 3600
 # 鉴权配置
 # ---------------------------------------------------------------------------
 #
-# 访问密钥从环境变量 NETDISK_KEY 读取，未设置时回退到默认值。
-# 注意：默认值仅用于开箱可用，正式使用请通过环境变量覆盖。
+# 访问密钥从环境变量 NETDISK_KEY 读取。
 #
-ACCESS_KEY = os.environ.get("NETDISK_KEY", "change-me")
+# ⚠️ 刻意**不提供**硬编码默认值：
+#    这是公开仓库，任何写进源码的默认密钥都等于公开密钥。
+#    未设置时启动即报错退出，逼着部署者显式配置，避免「忘了改默认值就上线」。
+#    生成一个强随机密钥：
+#        python3 -c "import secrets; print(secrets.token_urlsafe(24))"
+#
+ACCESS_KEY = os.environ.get("NETDISK_KEY", "")
+if not ACCESS_KEY:
+    raise SystemExit(
+        "未设置 NETDISK_KEY 环境变量。\n"
+        "这是访问密钥，必须显式配置。生成一个：\n"
+        '  python3 -c "import secrets; print(secrets.token_urlsafe(24))"\n'
+        "然后以该值设置 NETDISK_KEY 后重新启动。"
+    )
 
 # 签名用随机盐：进程启动时生成。服务重启后所有旧会话失效（需重新登录），
 # 这是有意的安全取舍——避免把密钥写进磁盘。
@@ -583,6 +595,24 @@ def verify_token(token: str) -> bool:
     return ok
 
 
+def _strip_gateway_suffix(v: str) -> str:
+    """
+    剥掉线上网关给凭证类查询参数追加的 `:N` 序号。
+
+    ⚠️ 线上实测：请求经网关转发时，形如
+        ?token=1790420062.xxxxx  →  应用层收到 `1790420062.xxxxx:1`
+    尾部被追加了 `:<数字>`（推测是网关的防重放序号）。
+    这会让 HMAC 签名对不上，导致所有走查询参数的下载 / 预览全部 401。
+
+    该后缀只出现在查询参数上（请求头不受影响），且只会是纯数字，
+    因此可以安全剥离。这里只处理「冒号 + 数字」结尾，
+    不影响本身就含冒号的合法凭证（本应用 token 与 Key 都不含冒号）。
+    """
+    if not v:
+        return v
+    return re.sub(r":\d+$", "", v)
+
+
 def extract_token() -> str:
     """
     从 Cookie / 查询参数 / Authorization 头中提取 Token。
@@ -591,7 +621,8 @@ def extract_token() -> str:
         1. 线上网关会用自签的 JWT **覆盖** Authorization 请求头
            （形如 `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...`），
            因此 Authorization 在线上不可用于传递本应用凭证；
-        2. `?token=` / `?apikey=` 查询参数**能原样到达**应用层，可用；
+        2. `?token=` / `?apikey=` 查询参数能到达应用层，但**会被追加 `:N` 后缀**，
+           需要用 _strip_gateway_suffix() 剥掉后才是原始凭证；
         3. Cookie 能原样透传，是浏览器场景最稳的通道。
 
     提取优先级：Cookie → 查询参数 → Authorization（本地调试用）。
@@ -611,12 +642,12 @@ def extract_token() -> str:
     # 1) Cookie（浏览器主用，线上最可靠）
     t = request.cookies.get(COOKIE_NAME)
     if t:
-        return t
+        return _strip_gateway_suffix(t)
 
-    # 2) 查询参数（本地调试 / API 调用；线上实测可穿透网关）
+    # 2) 查询参数（下载 / 预览等无法自定义请求头的场景）
     t = request.args.get("token", "") or ""
     if t:
-        return t
+        return _strip_gateway_suffix(t)
 
     # 3) Authorization: Bearer <token>（仅本地/内网直连可用）
     auth = request.headers.get("Authorization", "")
@@ -624,7 +655,7 @@ def extract_token() -> str:
         cand = auth[7:].strip()
         # 网关注入的 JWT 直接忽略，避免覆盖真实凭证
         if not _looks_like_gateway_jwt(cand):
-            return cand
+            return _strip_gateway_suffix(cand)
 
     return ""
 
@@ -634,23 +665,27 @@ def extract_apikey() -> str:
     从请求中提取 API Key 明文。
 
     支持的通道（按优先级）：
-      1. `?apikey=` 查询参数  —— 实测可穿透线上网关，是主要通道
-      2. `X-API-Key` 请求头   —— 本地/内网直连可用（线上网关会剥离）
+      1. `?apikey=` 查询参数  —— 下载 / 预览等无法设请求头的场景用它，
+                                 注意会被网关追加 `:N` 后缀，需剥离
+      2. `X-API-Key` 请求头   —— 前端主通道，不受网关影响
       3. `Authorization: Bearer ndk_...` —— 仅当值不是网关注入的 JWT 时
+
+    所有通道都过一遍 _strip_gateway_suffix()。目前实测后缀只出现在查询参数上，
+    但网关行为可能变化，统一处理成本为零、收益是「换通道不会踩坑」。
     """
     t = request.args.get("apikey", "") or ""
     if t:
-        return t.strip()
+        return _strip_gateway_suffix(t).strip()
 
     t = request.headers.get("X-API-Key", "") or ""
     if t:
-        return t.strip()
+        return _strip_gateway_suffix(t).strip()
 
     auth = request.headers.get("Authorization", "")
     if auth.startswith("Bearer "):
         cand = auth[7:].strip()
         if cand.startswith("ndk_"):
-            return cand
+            return _strip_gateway_suffix(cand)
 
     return ""
 

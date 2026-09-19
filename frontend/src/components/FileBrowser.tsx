@@ -59,6 +59,8 @@ export default function FileBrowser({ onPathChange, onRequestUpload, uploading }
   const [deleting, setDeleting] = useState<Entry[] | null>(null)
   const [mkdirOpen, setMkdirOpen] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [batchBusy, setBatchBusy] = useState(false)
+  const [batchProgress, setBatchProgress] = useState(0)
 
   // 请求竞态保护：目录快速切换时只认最后一次
   const reqSeq = useRef(0)
@@ -200,6 +202,48 @@ export default function FileBrowser({ onPathChange, onRequestUpload, uploading }
     }
   }
 
+  /**
+   * 批量下载。
+   *
+   * 不引入 zip 库 —— 多文件时改为逐个触发浏览器下载，
+   * 浏览器会自行排队。这样零依赖，且不占用内存做压缩。
+   * 文件夹会被跳过并告知用户（递归打包需要额外实现）。
+   */
+  async function doDownloadSelected() {
+    const files = selectedEntries.filter((e) => !e.is_dir)
+    const dirCount = selectedEntries.length - files.length
+
+    if (!files.length) {
+      toast.warning('所选内容都是文件夹', '文件夹需进入后再选择其中的文件')
+      return
+    }
+
+    setBatchBusy(true)
+    let done = 0
+    let failed = 0
+
+    for (const f of files) {
+      try {
+        await api.download(f.path, f.name)
+        done++
+      } catch {
+        failed++
+      }
+      setBatchProgress(Math.round(((done + failed) / files.length) * 100))
+      // 连续触发下载时留一点间隔，避免浏览器把后续请求当弹窗拦截
+      await new Promise((r) => setTimeout(r, 350))
+    }
+
+    setBatchBusy(false)
+    setBatchProgress(0)
+
+    if (failed === 0) {
+      toast.success(`已下载 ${done} 个文件`, dirCount ? `跳过 ${dirCount} 个文件夹` : undefined)
+    } else {
+      toast.warning(`下载完成 ${done} 个，${failed} 个失败`, dirCount ? `跳过 ${dirCount} 个文件夹` : undefined)
+    }
+  }
+
   // 键盘快捷键：仅当没有弹窗时生效
   const anyModalOpen = !!(preview || renaming || deleting || mkdirOpen)
   useEffect(() => {
@@ -238,7 +282,7 @@ export default function FileBrowser({ onPathChange, onRequestUpload, uploading }
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       {/* ═══ 工具栏 ═══ */}
-      <div className="flex flex-wrap items-center gap-2 px-3 py-2.5 sm:px-4">
+      <div className="flex flex-wrap items-center gap-2 px-3 py-3 sm:px-4">
         {/* 返回上级 */}
         <button
           type="button"
@@ -247,13 +291,13 @@ export default function FileBrowser({ onPathChange, onRequestUpload, uploading }
           title="返回上级（Backspace）"
           aria-label="返回上级"
           className={cn(
-            'grid size-9 shrink-0 place-items-center rounded-full transition-colors',
+            'grid size-9 shrink-0 place-items-center rounded-full border-2 bg-white transition-colors',
             path
-              ? 'text-[--color-ink-soft] hover:bg-white hover:text-[--color-brand-600]'
-              : 'cursor-not-allowed text-slate-300',
+              ? 'border-[--color-sky-400] text-[--color-sky-600] hover:bg-[--color-sky-50]'
+              : 'cursor-not-allowed border-slate-200 text-slate-300',
           )}
         >
-          <Icon d="M19 12H5M12 19l-7-7 7-7" />
+          <Icon d={ICONS.back} />
         </button>
 
         {/* 面包屑 */}
@@ -265,10 +309,10 @@ export default function FileBrowser({ onPathChange, onRequestUpload, uploading }
             type="button"
             onClick={() => void load('')}
             className={cn(
-              'flex shrink-0 items-center gap-1 rounded-full px-2.5 py-1 font-bold transition-colors',
+              'flex shrink-0 items-center gap-1 rounded-full border-2 px-2.5 py-1 font-bold transition-colors',
               path
-                ? 'text-[--color-ink-soft] hover:bg-white hover:text-[--color-brand-600]'
-                : 'bg-white text-[--color-ink] shadow-sm',
+                ? 'border-transparent text-[--color-ink-soft] hover:border-[--color-sky-200] hover:text-[--color-sky-600]'
+                : 'border-[--color-sky-400] bg-[--color-sky-100] text-[--color-sky-700]',
             )}
           >
             <Icon d={ICONS.home} className="size-3.5" />
@@ -284,10 +328,10 @@ export default function FileBrowser({ onPathChange, onRequestUpload, uploading }
                 type="button"
                 onClick={() => void load(c.path)}
                 className={cn(
-                  'truncate-1 max-w-[10rem] rounded-full px-2.5 py-1 font-bold transition-colors',
+                  'truncate-1 max-w-[10rem] rounded-full border-2 px-2.5 py-1 font-bold transition-colors',
                   i === crumb.length - 1
-                    ? 'bg-white text-[--color-ink] shadow-sm'
-                    : 'text-[--color-ink-soft] hover:bg-white hover:text-[--color-brand-600]',
+                    ? 'border-[--color-sky-400] bg-[--color-sky-100] text-[--color-sky-700]'
+                    : 'border-transparent text-[--color-ink-soft] hover:border-[--color-sky-200] hover:text-[--color-sky-600]',
                 )}
               >
                 {c.name}
@@ -300,12 +344,12 @@ export default function FileBrowser({ onPathChange, onRequestUpload, uploading }
         <div className="relative w-full sm:w-44">
           <Icon
             d={ICONS.search}
-            className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-[--color-ink-faint]"
+            className="pointer-events-none absolute top-1/2 left-3 size-3.5 -translate-y-1/2 text-[--color-ink-faint]"
           />
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="搜索当前目录"
+            placeholder="搜索"
             className="field py-1.5 pr-7 pl-8 text-xs"
             aria-label="搜索当前目录"
           />
@@ -313,7 +357,7 @@ export default function FileBrowser({ onPathChange, onRequestUpload, uploading }
             <button
               type="button"
               onClick={() => setQuery('')}
-              className="absolute top-1/2 right-2 -translate-y-1/2 rounded-full p-0.5 text-[--color-ink-faint] hover:text-[--color-ink]"
+              className="absolute top-1/2 right-2.5 -translate-y-1/2 text-[--color-ink-faint] hover:text-[--color-ink]"
               aria-label="清除搜索"
             >
               <Icon d={ICONS.close} className="size-3" />
@@ -322,7 +366,7 @@ export default function FileBrowser({ onPathChange, onRequestUpload, uploading }
         </div>
 
         {/* 排序 */}
-        <div className="flex items-center gap-0.5 rounded-full bg-white/70 p-0.5 shadow-sm">
+        <div className="flex items-center gap-1">
           {([
             ['name', '名称'],
             ['mtime', '时间'],
@@ -339,8 +383,10 @@ export default function FileBrowser({ onPathChange, onRequestUpload, uploading }
                 }
               }}
               className={cn(
-                'flex items-center gap-0.5 rounded-full px-2.5 py-1 text-[11px] font-bold transition-colors',
-                sort === k ? 'bg-[--color-brand-500] text-white' : 'text-[--color-ink-soft] hover:text-[--color-ink]',
+                'flex items-center gap-0.5 rounded-full border-2 px-2.5 py-1 text-[11px] font-bold transition-colors',
+                sort === k
+                  ? 'border-[--color-sky-400] bg-[--color-sky-400] text-white'
+                  : 'border-[--color-sky-200] bg-white text-[--color-sky-600] hover:border-[--color-sky-400]',
               )}
             >
               {label}
@@ -354,7 +400,7 @@ export default function FileBrowser({ onPathChange, onRequestUpload, uploading }
         </div>
 
         {/* 操作按钮 */}
-        <div className="flex w-full items-center gap-1.5 sm:w-auto">
+        <div className="flex w-full items-center gap-2 sm:w-auto">
           <Button
             onClick={() => setMkdirOpen(true)}
             icon={<Icon d={ICONS.folderPlus} />}
@@ -374,21 +420,21 @@ export default function FileBrowser({ onPathChange, onRequestUpload, uploading }
       </div>
 
       {/* ═══ 选中态工具条 ═══ */}
-      <div className="flex min-h-9 items-center gap-2 px-3 pb-1 sm:px-4">
+      <div className="flex min-h-9 flex-wrap items-center gap-2 px-3 pb-2 sm:px-4">
         <label className="flex cursor-pointer items-center gap-2 text-xs font-bold text-[--color-ink-soft]">
           <input
             type="checkbox"
             checked={allChecked}
             onChange={toggleAll}
             disabled={!visible.length}
-            className="size-4 rounded border-slate-300 accent-[--color-brand-500]"
+            className="size-4 rounded border-slate-300 accent-[--color-sky-500]"
           />
           全选
         </label>
 
         {selected.size > 0 ? (
           <>
-            <span className="chip bg-[--color-brand-100] text-[--color-brand-700]">
+            <span className="chip border-2 border-[--color-sky-200] bg-[--color-sky-100] text-[--color-sky-700]">
               已选 {selected.size} 项
               {selectedEntries.reduce((s, e) => s + (e.is_dir ? 0 : e.size), 0) > 0 &&
                 ` · ${humanSize(selectedEntries.reduce((s, e) => s + (e.is_dir ? 0 : e.size), 0))}`}
@@ -400,23 +446,33 @@ export default function FileBrowser({ onPathChange, onRequestUpload, uploading }
                 setSelected(new Set())
                 setSelectMode(false)
               }}
-              className="text-xs font-bold text-[--color-ink-faint] hover:text-[--color-ink]"
+              className="text-xs font-bold text-[--color-ink-faint] hover:text-[--color-sky-600] hover:underline"
             >
               取消选择
             </button>
 
-            <Button
-              variant="danger"
-              onClick={() => setDeleting(selectedEntries)}
-              disabled={busy || uploading}
-              icon={<Icon d={ICONS.trash} />}
-              className="ml-auto !py-1.5 !text-xs"
-            >
-              删除所选
-            </Button>
+            <div className="ml-auto flex items-center gap-2">
+              <Button
+                size="sm"
+                onClick={() => void doDownloadSelected()}
+                disabled={batchBusy}
+                icon={<Icon d={ICONS.download} className="size-3.5" />}
+              >
+                {batchBusy ? `打包中 ${batchProgress}%` : '下载所选'}
+              </Button>
+              <Button
+                size="sm"
+                variant="danger"
+                onClick={() => setDeleting(selectedEntries)}
+                disabled={busy || uploading}
+                icon={<Icon d={ICONS.trash} className="size-3.5" />}
+              >
+                删除
+              </Button>
+            </div>
           </>
         ) : (
-          <span className="text-xs text-[--color-ink-faint]">
+          <span className="text-xs font-medium text-[--color-ink-faint]">
             {stats.dirs} 个文件夹 · {stats.files} 个文件
             {stats.total > 0 && ` · 共 ${humanSize(stats.total)}`}
             {query && ` · 匹配 ${visible.length} 项`}
@@ -424,7 +480,17 @@ export default function FileBrowser({ onPathChange, onRequestUpload, uploading }
         )}
       </div>
 
-      {/* ═══ 列表 ═══ */}
+      {/* ═══ 列表 ═══
+          区块标题沿用参考站点规格：text-2xl font-black text-slate-800 + sky 色图标。 */}
+      <h2 className="flex shrink-0 items-center gap-2 px-4 pt-1 pb-3 text-xl font-black text-slate-800 sm:text-2xl">
+        <Icon
+          d={path ? ICONS.folder : ICONS.cloud}
+          className="size-5 shrink-0 text-[--color-sky-400] sm:size-6"
+          strokeWidth={2.2}
+        />
+        {path ? (crumb[crumb.length - 1]?.name ?? '文件夹') : '根目录'}
+      </h2>
+
       <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-4 sm:px-2.5">
         {loading ? (
           <SkeletonRows rows={7} />
@@ -459,7 +525,7 @@ export default function FileBrowser({ onPathChange, onRequestUpload, uploading }
             }
           />
         ) : (
-          <div className="flex flex-col gap-0.5">
+          <div className="flex flex-col gap-1 px-2 pb-3">
             {visible.map((entry) => (
               <FileRow
                 key={entry.path}

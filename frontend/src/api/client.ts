@@ -352,6 +352,77 @@ function get<T extends ApiEnvelope>(
   return request<T>(path, { ...opts, method: 'GET', query })
 }
 
+/**
+ * 以二进制方式请求，返回 Blob。
+ *
+ * 与 request() 的区别：
+ *   - 不解析 JSON，直接取二进制
+ *   - 支持进度回调（靠 Content-Length 与 ReadableStream）
+ *
+ * 进度读取用 ReadableStream 手动累积，因为 fetch 没有原生下载进度事件。
+ * 若环境不支持 stream（少数旧浏览器），退化为一次性读取，进度只报 0 与 100%。
+ */
+async function requestBlob(
+  path: string,
+  query?: RequestOptions['query'],
+  onProgress?: (loaded: number, total: number) => void,
+  signal?: AbortSignal,
+): Promise<Blob> {
+  const url = buildUrl(path, query)
+  const headers = buildHeaders(false, true)
+
+  let res: Response
+  try {
+    res = await fetch(url, { method: 'GET', headers, signal })
+  } catch {
+    const offline = typeof navigator !== 'undefined' && navigator.onLine === false
+    throw new ApiError(offline ? 'offline' : 'cors', offline ? '网络不可达' : '请求失败')
+  }
+
+  if (!res.ok) {
+    // 错误响应通常是 JSON，尝试解析出可读信息
+    let payload: ApiEnvelope | undefined
+    try {
+      payload = (await res.json()) as ApiEnvelope
+    } catch {
+      /* 非 JSON 错误页，忽略 */
+    }
+    const kind = classify(res.status)
+    if (kind === 'unauthorized') emitUnauthorized()
+    throw new ApiError(kind, payload?.error || `HTTP ${res.status}`, res.status, payload)
+  }
+
+  const total = Number(res.headers.get('Content-Length') || 0)
+
+  // 无 stream 支持：一把梭
+  if (!res.body || typeof res.body.getReader !== 'function') {
+    const blob = await res.blob()
+    onProgress?.(blob.size, blob.size)
+    return blob
+  }
+
+  const reader = res.body.getReader()
+  const chunks: Uint8Array[] = []
+  let loaded = 0
+
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (value) {
+        chunks.push(value)
+        loaded += value.byteLength
+        onProgress?.(loaded, total || loaded)
+      }
+    }
+  } catch (err) {
+    if (signal?.aborted) throw new ApiError('aborted', '已取消')
+    throw new ApiError('unknown', '下载中断', 0, undefined)
+  }
+
+  return new Blob(chunks as BlobPart[])
+}
+
 /** POST + JSON */
 function post<T extends ApiEnvelope>(
   path: string,
@@ -481,13 +552,12 @@ export const api = {
   // ── 下载 ──────────────────────────────────────────────────────
 
   /**
-   * 构造下载链接。
+   * 构造下载链接（用于 <a href> 直接下载）。
    *
-   * 用 <a href> 直接触发浏览器原生下载，比 fetch + Blob 更好：
-   *   - 不占内存（大文件尤其重要）
-   *   - 浏览器自带进度与断点续传
-   *   - 不受 CORS 限制
-   * 所以这里把凭证拼进查询参数。
+   * ⚠️ 只在无法走 Blob 方案时使用。
+   *    走 URL 传凭证会被线上网关追加 `:N` 后缀（后端已做剥离容错），
+   *    但更稳的做法是用下面的 fetchBlob() —— 它走 X-API-Key 请求头，
+   *    凭证不出现在 URL 里（不会被写进日志、浏览器历史、Referer）。
    */
   downloadUrl(path: string): string {
     const params = new URLSearchParams()
@@ -499,6 +569,64 @@ export const api = {
       if (token) params.set('token', token)
     }
     return `${API_BASE}/api/download?${params.toString()}`
+  },
+
+  /**
+   * 以 Blob 方式下载。
+   *
+   * 为什么不用 <a href>：那需要把凭证拼进 URL，既会泄露到日志/历史，
+   * 又会被网关改写。这里用 fetch + X-API-Key 请求头，干净且可靠。
+   *
+   * @param path    文件相对路径
+   * @param onProgress 进度回调（仅当响应带 Content-Length 时可用）
+   * @param signal  用于取消
+   */
+  async fetchBlob(
+    path: string,
+    onProgress?: (loaded: number, total: number) => void,
+    signal?: AbortSignal,
+  ): Promise<Blob> {
+    const res = await requestBlob('/api/download', { path }, onProgress, signal)
+    return res
+  },
+
+  /**
+   * 取文件内容为 Object URL，供 <img> / <video> 等原生标签使用。
+   *
+   * 注意：调用方负责在合适的时机 URL.revokeObjectURL()，
+   * 否则会持续占用内存。
+   */
+  async fetchObjectUrl(path: string, signal?: AbortSignal): Promise<string> {
+    const blob = await api.fetchBlob(path, undefined, signal)
+    return URL.createObjectURL(blob)
+  },
+
+  /**
+   * 触发浏览器下载。
+   *
+   * 先 Blob 拿数据，再用临时的 <a download> 触发保存对话框，
+   * 这样文件名能正确带上（URL 直链在跨域时 download 属性可能被忽略）。
+   */
+  async download(
+    path: string,
+    filename: string,
+    onProgress?: (loaded: number, total: number) => void,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const blob = await api.fetchBlob(path, onProgress, signal)
+    const url = URL.createObjectURL(blob)
+    try {
+      const a = document.createElement('a')
+      a.href = url
+      a.download = filename
+      a.rel = 'noopener'
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+    } finally {
+      // 给浏览器一点时间发起保存，再释放
+      setTimeout(() => URL.revokeObjectURL(url), 60_000)
+    }
   },
 
   // ── 设置 ──────────────────────────────────────────────────────

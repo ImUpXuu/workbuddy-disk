@@ -1,46 +1,56 @@
 @import "tailwindcss";
 
 /* ═══════════════════════════════════════════════════════════════════
-   设计令牌
-   参考 Gallery 的视觉语言：柔和天蓝、大圆角、轻阴影、圆点阵背景。
-   Tailwind v4 用 @theme 定义令牌，会自动生成对应工具类
-   （如 --color-sky-ink 会带来 text-sky-ink / bg-sky-ink）。
+   设计令牌 —— 对齐 life.upxuu.com 的「笔绘 / 贴纸」风格
+
+   核心特征（从参考站点 CSS 提取）：
+     1. 硬阴影     box-shadow 无模糊、纯色偏移 → 贴纸浮起感
+     2. 描边       2px 实线边框，而不是无边框玻璃
+     3. 大圆角     卡片 1.5rem，按钮全圆
+     4. 位移反馈   hover 向左上浮起、active 向右下压平
+     5. 圆点阵底   30px 网格、实心圆点（无透明度）
+     6. 正文 #333  系统字体栈，不引外部字体
    ═══════════════════════════════════════════════════════════════════ */
 
 @theme {
-  /* 字体：Nunito 圆润友好，作为主字体；中文回退到系统黑体 */
-  --font-sans: "Nunito", "PingFang SC", "Microsoft YaHei", "Hiragino Sans GB",
-    system-ui, -apple-system, "Segoe UI", sans-serif;
+  /* 字体：与参考站点一致，纯系统栈（不引入外部字体，避免额外请求与闪烁） */
+  --font-sans: ui-sans-serif, system-ui, sans-serif, "PingFang SC",
+    "Microsoft YaHei", "Apple Color Emoji", "Segoe UI Emoji";
 
-  /* 主色：天蓝系 */
-  --color-brand-50: #f0f9ff;
-  --color-brand-100: #e0f2fe;
-  --color-brand-200: #bae6fd;
-  --color-brand-300: #7dd3fc;
-  --color-brand-400: #38bdf8;
-  --color-brand-500: #0ea5e9;
-  --color-brand-600: #0284c7;
-  --color-brand-700: #0369a1;
-  --color-brand-800: #075985;
-  --color-brand-900: #0c4a6e;
+  /* 主色板：sky 系 */
+  --color-sky-50: #f0f9ff;
+  --color-sky-100: #e0f2fe;
+  --color-sky-200: #bae6fd;
+  --color-sky-300: #7dd3fc;
+  --color-sky-400: #38bdf8;   /* 描边与阴影主色（用得最多） */
+  --color-sky-500: #0ea5e9;
+  --color-sky-600: #0284c7;   /* 标题 / 强调文字 */
+  --color-sky-700: #0369a1;
 
-  /* 页面底色 / 文字 */
-  --color-canvas: rgb(240, 248, 255);
-  --color-ink: #0f172a;
-  --color-ink-soft: #475569;
-  --color-ink-faint: #94a3b8;
+  /* 页面 */
+  --color-canvas: #f0f8ff;
+  --color-ink: #333333;        /* 正文色，与参考站点一致 */
+  --color-ink-soft: #64748b;   /* slate-500 */
+  --color-ink-faint: #94a3b8;  /* slate-400 */
 
-  /* 圆角：整体偏大，配合柔和观感 */
-  --radius-card: 1.25rem;
-  --radius-pill: 9999px;
+  /* 圆角 */
+  --radius-cute: 1.5rem;
 
-  /* 阴影：低对比、大扩散，避免生硬 */
-  --shadow-card: 0 1px 2px rgb(15 23 42 / 0.04), 0 8px 24px -8px rgb(15 23 42 / 0.10);
-  --shadow-lift: 0 2px 4px rgb(15 23 42 / 0.05), 0 16px 32px -12px rgb(15 23 42 / 0.16);
+  /* 硬阴影：无模糊、纯色偏移 */
+  --shadow-cute: 4px 4px 0 var(--color-sky-400);
+  --shadow-cute-lg: 6px 6px 0 var(--color-sky-400);
+  --shadow-cute-sm: 2px 2px 0 var(--color-sky-400);
+
+  /* 笔绘风的补充色：黄 / 绿 / 蓝，用于文件类型区分与高亮。
+     参考站点里 #fde047 / #86efac / #93c5fd 出现频率仅次于主色。 */
+  --color-cute-yellow: #fde047;
+  --color-cute-green: #86efac;
+  --color-cute-blue: #93c5fd;
+  --color-cute-red: #fca5a5;
 }
 
 /* ═══════════════════════════════════════════════════════════════════
-   基础样式
+   基础
    ═══════════════════════════════════════════════════════════════════ */
 
 @layer base {
@@ -56,38 +66,17 @@
     color: var(--color-ink);
     background-color: var(--color-canvas);
 
-    /* 圆点阵背景：与参考站点一致的径向渐变网点 */
-    background-image: radial-gradient(rgb(186 230 253 / 0.55) 1.5px, transparent 1.5px);
-    background-size: 22px 22px;
-    background-position: 0 0;
+    /* 圆点阵：与参考站点完全一致的实心圆点 + 30px 网格 */
+    background-image: radial-gradient(#bae6fd 2px, transparent 2px);
+    background-size: 30px 30px;
   }
 
-  /* 顶部一层柔光，让纯色底不那么平 */
-  body::before {
-    content: "";
-    position: fixed;
-    inset: 0;
-    pointer-events: none;
-    z-index: 0;
-    background: radial-gradient(
-      120% 70% at 50% -20%,
-      rgb(224 242 254 / 0.9) 0%,
-      rgb(240 248 255 / 0) 60%
-    );
-  }
-
-  #root {
-    position: relative;
-    z-index: 1;
-  }
-
-  /* 焦点可见性：键盘可达，但不干扰鼠标用户 */
+  /* 焦点可见性 */
   :focus-visible {
-    outline: 2px solid var(--color-brand-500);
-    outline-offset: 2px;
+    outline: 2px solid var(--color-sky-600);
+    outline-offset: 3px;
   }
 
-  /* 细滚动条，贴合整体观感 */
   ::-webkit-scrollbar {
     width: 10px;
     height: 10px;
@@ -96,13 +85,13 @@
     background: transparent;
   }
   ::-webkit-scrollbar-thumb {
-    background: rgb(148 163 184 / 0.4);
+    background: var(--color-sky-200);
     border-radius: 9999px;
     border: 3px solid transparent;
     background-clip: content-box;
   }
   ::-webkit-scrollbar-thumb:hover {
-    background: rgb(100 116 139 / 0.6);
+    background: var(--color-sky-300);
     background-clip: content-box;
   }
 
@@ -118,131 +107,199 @@
 }
 
 /* ═══════════════════════════════════════════════════════════════════
-   复用组件类
+   笔绘风格组件
+   与参考站点同名同实现，方便对照维护。
    ═══════════════════════════════════════════════════════════════════ */
 
 @layer components {
-  .card {
-    background: rgb(255 255 255 / 0.82);
-    backdrop-filter: blur(8px);
-    border: 1px solid rgb(255 255 255 / 0.9);
-    border-radius: var(--radius-card);
-    box-shadow: var(--shadow-card);
+  /* ── 卡片：白底 + 2px 描边 + 4px 硬阴影 ──
+     与参考站点 .cute-border 逐条对齐。 */
+  .cute-border {
+    background-color: #fff;
+    border: 2px solid var(--color-sky-400);
+    border-radius: var(--radius-cute);
+    box-shadow: 4px 4px 0 var(--color-sky-400);
   }
 
-  /* 主按钮 */
+  /* 可交互卡片：悬停向左上浮起、阴影变大。
+     transition 与参考站点一致用 .2s。 */
+  .cute-border-hover {
+    transition: transform 0.2s, box-shadow 0.2s;
+  }
+  @media (hover: hover) {
+    .cute-border-hover:hover {
+      transform: translate(-2px, -2px);
+      box-shadow: 6px 6px 0 var(--color-sky-400);
+    }
+  }
+
+  /* ── 按钮：全圆角 + 2px 描边 + 2px 硬阴影 ──
+     transition 用 .1s（比卡片更快，按下反馈要跟手）。 */
+  .cute-button {
+    background-color: #fff;
+    border: 2px solid var(--color-sky-400);
+    border-radius: 9999px;
+    box-shadow: 2px 2px 0 var(--color-sky-400);
+    transition: transform 0.1s, box-shadow 0.1s, background-color 0.15s;
+  }
+
+  /* 按钮作为 <a> 渲染时（例如「退出」改成链接）补齐布局样式 */
+  a.cute-button {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-weight: 700;
+    text-decoration: none;
+  }
+
   .btn {
     display: inline-flex;
     align-items: center;
     justify-content: center;
     gap: 0.375rem;
-    border-radius: var(--radius-pill);
     font-weight: 700;
     font-size: 0.875rem;
     line-height: 1;
-    padding: 0.625rem 1.125rem;
-    border: 1px solid transparent;
+    padding: 0.5rem 1rem;
     cursor: pointer;
-    transition: background-color 0.15s, border-color 0.15s, box-shadow 0.15s,
-      transform 0.1s, opacity 0.15s;
     white-space: nowrap;
     user-select: none;
+    /* 默认套用笔绘按钮外观 */
+    background-color: #fff;
+    border: 2px solid var(--color-sky-400);
+    border-radius: 9999px;
+    box-shadow: 2px 2px 0 var(--color-sky-400);
+    transition: transform 0.1s, box-shadow 0.1s, background-color 0.15s, color 0.15s;
   }
+
+  /* 按下：影子消失 + 位移，模拟按扁 */
   .btn:active:not(:disabled) {
-    transform: translateY(1px);
+    transform: translate(2px, 2px);
+    box-shadow: 0 0 0 var(--color-sky-400);
   }
   .btn:disabled {
-    opacity: 0.5;
+    opacity: 0.45;
     cursor: not-allowed;
+    box-shadow: 2px 2px 0 rgb(186 230 253);
+    border-color: rgb(186 230 253);
   }
 
+  /* 悬停：向左上浮起一点，与卡片的 hover 语言保持一致。
+     仅在有指针设备时启用，避免触屏上「悬停态卡住」。 */
+  @media (hover: hover) {
+    .btn:hover:not(:disabled) {
+      transform: translate(-1px, -1px);
+      box-shadow: 3px 3px 0 var(--color-sky-400);
+    }
+  }
+
+  /* 主按钮：实心天蓝 */
   .btn-primary {
-    background: var(--color-brand-500);
+    background-color: var(--color-sky-400);
     color: #fff;
-    box-shadow: 0 6px 16px -6px rgb(14 165 233 / 0.7);
   }
-  .btn-primary:hover:not(:disabled) {
-    background: var(--color-brand-600);
-    box-shadow: 0 8px 20px -6px rgb(14 165 233 / 0.8);
+  @media (hover: hover) {
+    .btn-primary:hover:not(:disabled) {
+      background-color: var(--color-sky-500);
+    }
   }
 
+  /* 次按钮：白底蓝字 */
   .btn-ghost {
-    background: rgb(255 255 255 / 0.7);
-    color: var(--color-ink-soft);
-    border-color: rgb(226 232 240 / 0.9);
+    background-color: #fff;
+    color: var(--color-sky-600);
   }
-  .btn-ghost:hover:not(:disabled) {
-    background: #fff;
-    color: var(--color-brand-700);
-    border-color: var(--color-brand-200);
+  @media (hover: hover) {
+    .btn-ghost:hover:not(:disabled) {
+      background-color: var(--color-sky-50);
+    }
   }
 
+  /* 危险按钮：红描边 */
   .btn-danger {
-    background: #ef4444;
-    color: #fff;
+    background-color: #fff;
+    color: #dc2626;
+    border-color: #fca5a5;
+    box-shadow: 2px 2px 0 #fca5a5;
   }
-  .btn-danger:hover:not(:disabled) {
-    background: #dc2626;
+  .btn-danger:active:not(:disabled) {
+    box-shadow: 0 0 0 #fca5a5;
+  }
+  @media (hover: hover) {
+    .btn-danger:hover:not(:disabled) {
+      background-color: #fef2f2;
+    }
   }
 
-  /* 输入框 */
+  /* ── 输入框：描边 + 内嵌感（无阴影，聚焦时描边加深） ── */
   .field {
     width: 100%;
     border-radius: 0.875rem;
-    border: 1px solid rgb(226 232 240 / 0.95);
-    background: rgb(255 255 255 / 0.8);
-    padding: 0.625rem 0.875rem;
+    border: 2px solid var(--color-sky-200);
+    background-color: #fff;
+    padding: 0.5rem 0.875rem;
     font-size: 0.875rem;
     color: var(--color-ink);
-    transition: border-color 0.15s, box-shadow 0.15s, background-color 0.15s;
+    transition: border-color 0.15s;
   }
   .field::placeholder {
     color: var(--color-ink-faint);
   }
   .field:focus {
     outline: none;
-    background: #fff;
-    border-color: var(--color-brand-400);
-    box-shadow: 0 0 0 3px rgb(56 189 248 / 0.18);
+    border-color: var(--color-sky-400);
   }
 
-  /* 小标签 */
+  /* ── 小标签 ── */
   .chip {
     display: inline-flex;
     align-items: center;
     gap: 0.25rem;
-    border-radius: var(--radius-pill);
-    padding: 0.125rem 0.5rem;
+    border-radius: 9999px;
+    padding: 0.125rem 0.625rem;
     font-size: 0.6875rem;
     font-weight: 700;
-    line-height: 1.5;
+    line-height: 1.6;
+  }
+
+  /* ── 图标底座：圆形 + 描边 ── */
+  .icon-disc {
+    display: grid;
+    place-items: center;
+    border-radius: 9999px;
+    background-color: var(--color-sky-100);
+    border: 2px solid var(--color-sky-200);
   }
 }
 
 @layer utilities {
-  /* 文字截断 */
   .truncate-1 {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  /* 骨架屏微光 */
+  /* 多行截断 */
+  .line-clamp-2 {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
   @keyframes skeleton-pulse {
-    0%, 100% { opacity: 0.55; }
-    50% { opacity: 0.9; }
+    0%, 100% { opacity: 0.5; }
+    50% { opacity: 0.85; }
   }
   .skeleton {
-    background: rgb(186 230 253 / 0.45);
-    animation: skeleton-pulse 1.6s ease-in-out infinite;
+    background: var(--color-sky-100);
     border-radius: 0.5rem;
+    animation: skeleton-pulse 1.6s ease-in-out infinite;
   }
 }
 
 /* ═══════════════════════════════════════════════════════════════════
    动画
-   Toast / Modal 用到的入场动画。放在 utilities 之外，
-   避免被 layer 的处理顺序影响。
    ═══════════════════════════════════════════════════════════════════ */
 
 @keyframes fade-in {
@@ -251,45 +308,16 @@
 }
 
 @keyframes toast-in {
-  from {
-    opacity: 0;
-    transform: translateX(12px) scale(0.97);
-  }
-  to {
-    opacity: 1;
-    transform: translateX(0) scale(1);
-  }
+  from { opacity: 0; transform: translateY(-8px) scale(0.97); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
 }
 
 @keyframes modal-in {
-  from {
-    opacity: 0;
-    transform: translateY(8px) scale(0.98);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
+  from { opacity: 0; transform: translateY(8px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
 }
 
-@keyframes slide-up {
-  from {
-    opacity: 0;
-    transform: translateY(100%);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-@keyframes menu-in {
-  from {
-    opacity: 0;
-    transform: translateY(-4px) scale(0.97);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
+@keyframes pop-in {
+  0% { opacity: 0; transform: scale(0.9); }
+  100% { opacity: 1; transform: scale(1); }
 }

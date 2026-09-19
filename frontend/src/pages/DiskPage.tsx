@@ -1,7 +1,5 @@
 /**
  * 主界面：顶栏 + 文件浏览器。
- *
- * 阶段三先做只读与基础写操作，上传与设置后续接入。
  */
 
 import { useCallback, useState } from 'react'
@@ -17,52 +15,56 @@ export default function DiskPage() {
 
   return (
     <div className="flex min-h-dvh flex-col">
-      {/* ═══ 顶栏 ═══ */}
-      <header className="sticky top-0 z-30 border-b border-white/60 bg-white/70 backdrop-blur-xl">
-        <div className="mx-auto flex w-full max-w-6xl items-center gap-3 px-4 py-3">
-          <div className="flex min-w-0 items-center gap-2.5">
-            <div className="grid size-9 shrink-0 place-items-center rounded-xl bg-[--color-brand-500] text-white shadow-[0_6px_16px_-6px_rgb(14_165_233/0.7)]">
-              <Icon d={ICONS.cloud} className="size-5" strokeWidth={1.8} />
-            </div>
-            <div className="min-w-0">
-              <h1 className="truncate-1 text-sm leading-tight font-extrabold tracking-tight">
-                WorkBuddy Disk
-              </h1>
-              <p className="truncate-1 text-[11px] leading-tight text-[--color-ink-faint]">
-                {path ? `/${path}` : '根目录'}
-              </p>
-            </div>
-          </div>
+      {/* ═══ 顶栏 ═══
+          品牌字样沿用参考站点的实现：纯文字链接（不是胶囊按钮），
+          `text-2xl font-black text-[#0284c7] hover:opacity-80`，点击回根目录。 */}
+      <header className="sticky top-0 z-30 bg-[--color-canvas]">
+        <div className="mx-auto flex w-full max-w-5xl items-center gap-3 px-4 py-4">
+          <button
+            type="button"
+            onClick={() => setPath('')}
+            className="flex min-w-0 items-center gap-2 text-xl font-black text-[--color-sky-600] transition-opacity hover:opacity-80 sm:text-2xl"
+            aria-label="回到根目录"
+          >
+            <Icon
+              d={ICONS.cloud}
+              className="size-6 shrink-0 text-[--color-sky-400] sm:size-7"
+              strokeWidth={2}
+            />
+            <span className="truncate-1">WorkBuddy Disk</span>
+          </button>
 
-          <div className="ml-auto flex items-center gap-1.5">
-            <span
-              className="chip hidden bg-[--color-brand-100] text-[--color-brand-700] sm:inline-flex"
-              title={mode === 'apikey' ? '当前使用 API Key' : '当前使用登录凭证'}
-            >
-              {mode === 'apikey' ? 'API Key' : '会话'}
-            </span>
+          {/* 当前鉴权方式：参考站点的描边 chip 语言 */}
+          <span className="chip hidden border-2 border-[--color-sky-200] bg-white text-[--color-sky-600] sm:inline-flex">
+            {mode === 'apikey' ? 'API Key' : '会话'}
+          </span>
 
-            <Button
-              onClick={logout}
-              icon={<Icon d={ICONS.logout} className="size-3.5" />}
-              className="!px-3 !py-1.5 !text-xs"
-            >
-              退出
-            </Button>
-          </div>
+          <Button
+            onClick={logout}
+            size="sm"
+            className="ml-auto"
+            icon={<Icon d={ICONS.logout} className="size-3.5" />}
+          >
+            退出
+          </Button>
         </div>
       </header>
 
       {/* ═══ 主体 ═══ */}
-      <main className="mx-auto flex w-full max-w-6xl min-h-0 flex-1 flex-col px-2 py-3 sm:px-4">
-        <div className="card flex min-h-0 flex-1 flex-col overflow-hidden">
+      <main className="mx-auto flex w-full max-w-5xl min-h-0 flex-1 flex-col px-3 pb-2 sm:px-4">
+        <div className="cute-border flex min-h-0 flex-1 flex-col overflow-hidden">
           <FileBrowser onPathChange={handlePathChange} />
         </div>
       </main>
 
       {/* ═══ 页脚 ═══ */}
-      <footer className="px-4 pb-4 text-center text-[11px] text-[--color-ink-faint]">
-        WorkBuddy Disk · 前端 Vercel / 后端自托管
+      <footer className="mx-auto w-full max-w-5xl px-4 pt-4 pb-8 text-center">
+        <p className="text-xs font-bold tracking-wide text-slate-400">
+          {path ? `/${path}` : '根目录'}
+        </p>
+        <p className="mt-1 text-xs font-bold text-slate-400">
+          WorkBuddy Disk · 前端 Vercel / 后端自托管
+        </p>
       </footer>
     </div>
   )
