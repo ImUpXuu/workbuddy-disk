@@ -1,0 +1,295 @@
+@import "tailwindcss";
+
+/* ═══════════════════════════════════════════════════════════════════
+   设计令牌
+   参考 Gallery 的视觉语言：柔和天蓝、大圆角、轻阴影、圆点阵背景。
+   Tailwind v4 用 @theme 定义令牌，会自动生成对应工具类
+   （如 --color-sky-ink 会带来 text-sky-ink / bg-sky-ink）。
+   ═══════════════════════════════════════════════════════════════════ */
+
+@theme {
+  /* 字体：Nunito 圆润友好，作为主字体；中文回退到系统黑体 */
+  --font-sans: "Nunito", "PingFang SC", "Microsoft YaHei", "Hiragino Sans GB",
+    system-ui, -apple-system, "Segoe UI", sans-serif;
+
+  /* 主色：天蓝系 */
+  --color-brand-50: #f0f9ff;
+  --color-brand-100: #e0f2fe;
+  --color-brand-200: #bae6fd;
+  --color-brand-300: #7dd3fc;
+  --color-brand-400: #38bdf8;
+  --color-brand-500: #0ea5e9;
+  --color-brand-600: #0284c7;
+  --color-brand-700: #0369a1;
+  --color-brand-800: #075985;
+  --color-brand-900: #0c4a6e;
+
+  /* 页面底色 / 文字 */
+  --color-canvas: rgb(240, 248, 255);
+  --color-ink: #0f172a;
+  --color-ink-soft: #475569;
+  --color-ink-faint: #94a3b8;
+
+  /* 圆角：整体偏大，配合柔和观感 */
+  --radius-card: 1.25rem;
+  --radius-pill: 9999px;
+
+  /* 阴影：低对比、大扩散，避免生硬 */
+  --shadow-card: 0 1px 2px rgb(15 23 42 / 0.04), 0 8px 24px -8px rgb(15 23 42 / 0.10);
+  --shadow-lift: 0 2px 4px rgb(15 23 42 / 0.05), 0 16px 32px -12px rgb(15 23 42 / 0.16);
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   基础样式
+   ═══════════════════════════════════════════════════════════════════ */
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  body {
+    margin: 0;
+    min-height: 100dvh;
+    font-family: var(--font-sans);
+    color: var(--color-ink);
+    background-color: var(--color-canvas);
+
+    /* 圆点阵背景：与参考站点一致的径向渐变网点 */
+    background-image: radial-gradient(rgb(186 230 253 / 0.55) 1.5px, transparent 1.5px);
+    background-size: 22px 22px;
+    background-position: 0 0;
+  }
+
+  /* 顶部一层柔光，让纯色底不那么平 */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 0;
+    background: radial-gradient(
+      120% 70% at 50% -20%,
+      rgb(224 242 254 / 0.9) 0%,
+      rgb(240 248 255 / 0) 60%
+    );
+  }
+
+  #root {
+    position: relative;
+    z-index: 1;
+  }
+
+  /* 焦点可见性：键盘可达，但不干扰鼠标用户 */
+  :focus-visible {
+    outline: 2px solid var(--color-brand-500);
+    outline-offset: 2px;
+  }
+
+  /* 细滚动条，贴合整体观感 */
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: rgb(148 163 184 / 0.4);
+    border-radius: 9999px;
+    border: 3px solid transparent;
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgb(100 116 139 / 0.6);
+    background-clip: content-box;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   复用组件类
+   ═══════════════════════════════════════════════════════════════════ */
+
+@layer components {
+  .card {
+    background: rgb(255 255 255 / 0.82);
+    backdrop-filter: blur(8px);
+    border: 1px solid rgb(255 255 255 / 0.9);
+    border-radius: var(--radius-card);
+    box-shadow: var(--shadow-card);
+  }
+
+  /* 主按钮 */
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.375rem;
+    border-radius: var(--radius-pill);
+    font-weight: 700;
+    font-size: 0.875rem;
+    line-height: 1;
+    padding: 0.625rem 1.125rem;
+    border: 1px solid transparent;
+    cursor: pointer;
+    transition: background-color 0.15s, border-color 0.15s, box-shadow 0.15s,
+      transform 0.1s, opacity 0.15s;
+    white-space: nowrap;
+    user-select: none;
+  }
+  .btn:active:not(:disabled) {
+    transform: translateY(1px);
+  }
+  .btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .btn-primary {
+    background: var(--color-brand-500);
+    color: #fff;
+    box-shadow: 0 6px 16px -6px rgb(14 165 233 / 0.7);
+  }
+  .btn-primary:hover:not(:disabled) {
+    background: var(--color-brand-600);
+    box-shadow: 0 8px 20px -6px rgb(14 165 233 / 0.8);
+  }
+
+  .btn-ghost {
+    background: rgb(255 255 255 / 0.7);
+    color: var(--color-ink-soft);
+    border-color: rgb(226 232 240 / 0.9);
+  }
+  .btn-ghost:hover:not(:disabled) {
+    background: #fff;
+    color: var(--color-brand-700);
+    border-color: var(--color-brand-200);
+  }
+
+  .btn-danger {
+    background: #ef4444;
+    color: #fff;
+  }
+  .btn-danger:hover:not(:disabled) {
+    background: #dc2626;
+  }
+
+  /* 输入框 */
+  .field {
+    width: 100%;
+    border-radius: 0.875rem;
+    border: 1px solid rgb(226 232 240 / 0.95);
+    background: rgb(255 255 255 / 0.8);
+    padding: 0.625rem 0.875rem;
+    font-size: 0.875rem;
+    color: var(--color-ink);
+    transition: border-color 0.15s, box-shadow 0.15s, background-color 0.15s;
+  }
+  .field::placeholder {
+    color: var(--color-ink-faint);
+  }
+  .field:focus {
+    outline: none;
+    background: #fff;
+    border-color: var(--color-brand-400);
+    box-shadow: 0 0 0 3px rgb(56 189 248 / 0.18);
+  }
+
+  /* 小标签 */
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    border-radius: var(--radius-pill);
+    padding: 0.125rem 0.5rem;
+    font-size: 0.6875rem;
+    font-weight: 700;
+    line-height: 1.5;
+  }
+}
+
+@layer utilities {
+  /* 文字截断 */
+  .truncate-1 {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* 骨架屏微光 */
+  @keyframes skeleton-pulse {
+    0%, 100% { opacity: 0.55; }
+    50% { opacity: 0.9; }
+  }
+  .skeleton {
+    background: rgb(186 230 253 / 0.45);
+    animation: skeleton-pulse 1.6s ease-in-out infinite;
+    border-radius: 0.5rem;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   动画
+   Toast / Modal 用到的入场动画。放在 utilities 之外，
+   避免被 layer 的处理顺序影响。
+   ═══════════════════════════════════════════════════════════════════ */
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateX(12px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+  }
+}
+
+@keyframes modal-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(100%);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}

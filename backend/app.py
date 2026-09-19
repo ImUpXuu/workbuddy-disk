@@ -84,10 +84,13 @@ SESSION_TTL = int(os.environ.get("NETDISK_SESSION_TTL", str(7 * 24 * 3600)))
 # Cookie 名称
 COOKIE_NAME = "netdisk_session"
 
-# 免鉴权路径（登录页、登录接口本身，以及只返回布尔状态的 whoami）
-# whoami 只返回「是否已登录」的布尔值，不含任何敏感信息，
-# 且前端需要它在会话过期时做跳转判断，因此必须放行。
-PUBLIC_PATHS = {"/login", "/api/login", "/api/whoami", "/favicon.ico"}
+# 免鉴权路径（登录页、登录接口本身）
+#
+# ⚠️ /api/whoami 刻意**不**放在这里。
+#    它是探针接口，需要一个「未认证」的返回值来回答「凭证有效吗」，
+#    但同时又必须在鉴权流程内跑一遍，才能拿到 kind / key_name。
+#    所以它在 _auth_guard 里走完整流程，只在最终未通过时返回 200 + false。
+PUBLIC_PATHS = {"/login", "/api/login", "/favicon.ico"}
 
 # ---------------------------------------------------------------------------
 # 跨域（CORS）配置
@@ -758,6 +761,15 @@ def _auth_guard():
 
     # 未通过鉴权
     if path.startswith("/api/"):
+        # whoami 是探测接口：它的职责就是回答「当前凭证有效吗」，
+        # 所以未认证时必须返回 200 + authenticated:false，而不是 401 ——
+        # 否则前端无法区分「没登录」和「后端挂了」。
+        # 注意它仍在鉴权流程内（不放进 PUBLIC_PATHS），
+        # 这样 _AUTH_CTX 会被正确填充，有效凭证能拿到 kind/key_name。
+        if path == "/api/whoami":
+            return jsonify({
+                "ok": True, "authenticated": False, "kind": "none", "key_name": None,
+            }), 200
         return jsonify({"ok": False, "error": "未登录或登录已过期", "auth_required": True}), 401
 
     # 页面请求：重定向到登录页

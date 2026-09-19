@@ -1,0 +1,14 @@
+node_modules/
+dist/
+dist-ssr/
+.vite/
+coverage/
+*.local
+.env
+.env.*
+!.env.example
+.vercel
+.netlify
+
+# TypeScript 增量构建缓存
+*.tsbuildinfo
