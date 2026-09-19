@@ -1,0 +1,59 @@
+# ---------- 用户数据（严禁入库）----------
+storage/
+.upload_tmp/
+
+# ---------- 敏感配置：含 API Key 哈希与设置 ----------
+.config/
+
+# ---------- 日志 ----------
+*.log
+
+# ---------- Python ----------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+*.egg-info/
+.eggs/
+venv/
+.venv/
+env/
+ENV/
+
+# ---------- 前端（Node / Vite）----------
+node_modules/
+dist/
+dist-ssr/
+.vite/
+coverage/
+*.local
+
+# ---------- 编辑器 / IDE ----------
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ---------- 系统文件 ----------
+.DS_Store
+Thumbs.db
+
+# ---------- 运行时状态 ----------
+.app.pid
+.netdisk.pid
+
+# ---------- 密钥（防误提交）----------
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+.env
+.env.local
+.env.*.local
+
+# ---------- 部署平台 ----------
+.vercel
+.netlify
