@@ -191,7 +191,7 @@ const ICONS: Record<FileKind, string> = {
   code: '📜',
   apk: '📦',
   font: '🔤',
-  file: '📎',
+  file: '🗂️',  // 见 FileRow.tsx 的说明：回形针太淡
 }
 
 export function iconOf(name: string, isDir: boolean): string {

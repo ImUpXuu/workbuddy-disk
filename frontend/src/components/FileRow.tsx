@@ -42,7 +42,9 @@ const KIND_STYLE: Record<string, { bg: string; border: string; fg: string; glyph
   // 字体 —— 柔紫（占比极低，用中性色即可）
   font: { bg: '#f3e8ff', border: '#d8b4fe', fg: '#7e22ce', glyph: '🔤' },
   // 其他 —— 中性灰
-  file: { bg: '#f1f5f9', border: '#cbd5e1', fg: '#475569', glyph: '📎' },
+  // ⚠️ 字形选 🗂️ 而不是 📎：回形针在小尺寸下渲染极淡，
+  //    截图里几乎看不见，用户分不清这类文件是什么。
+  file: { bg: '#f1f5f9', border: '#cbd5e1', fg: '#475569', glyph: '🗂️' },
 }
 
 interface Props {
