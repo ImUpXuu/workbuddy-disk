@@ -89,6 +89,49 @@ COOKIE_NAME = "netdisk_session"
 # 且前端需要它在会话过期时做跳转判断，因此必须放行。
 PUBLIC_PATHS = {"/login", "/api/login", "/api/whoami", "/favicon.ico"}
 
+# ---------------------------------------------------------------------------
+# 跨域（CORS）配置
+# ---------------------------------------------------------------------------
+#
+# 前端部署在 Vercel（pan.upxuu.com），后端在自有服务器，两者不同源，
+# 因此所有请求都是跨域请求，必须显式放行。
+#
+# 三个必须处理点：
+#   1. 预检（OPTIONS）必须在鉴权之前短路返回 2xx
+#      —— 否则浏览器拿到 401 就直接判定跨域失败，根本不会发真正的请求
+#   2. 实际响应要带 Access-Control-Allow-Origin
+#   3. 若请求带凭证，还要 Allow-Credentials 且 Origin 不能为 *
+#
+# 白名单通过 NETDISK_CORS_ORIGINS 覆盖，逗号分隔；填 * 表示全部放行（不推荐）。
+DEFAULT_CORS_ORIGINS = (
+    "https://pan.upxuu.com",
+    "https://www.pan.upxuu.com",
+    "http://localhost:5173",   # vite dev
+    "http://localhost:4173",   # vite preview
+    "http://127.0.0.1:5173",
+    "http://127.0.0.1:4173",
+)
+
+_cors_env = os.environ.get("NETDISK_CORS_ORIGINS", "").strip()
+if _cors_env:
+    CORS_ORIGINS = [o.strip().rstrip("/") for o in _cors_env.split(",") if o.strip()]
+else:
+    CORS_ORIGINS = list(DEFAULT_CORS_ORIGINS)
+
+CORS_ALLOW_ALL = "*" in CORS_ORIGINS
+
+# 预检结果缓存时间（秒）
+CORS_MAX_AGE = 86400
+
+# 允许的自定义请求头：X-API-Key 是前端主通道，必须列进去
+CORS_ALLOW_HEADERS = "Content-Type, Authorization, X-API-Key, X-Requested-With, Range"
+
+# 允许的请求方法
+CORS_ALLOW_METHODS = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+
+# 允许浏览器读取的响应头（否则前端拿不到分片上传的校验值等信息）
+CORS_EXPOSE_HEADERS = "Content-Length, Content-Range, Accept-Ranges, Content-Disposition, ETag"
+
 # Flask 单请求体上限：要容纳「一个分片 + 表单字段」，留出余量。
 # 注意这是应用层上限，网关限制在其之前生效。
 app = Flask(__name__)
@@ -96,6 +139,53 @@ app.config["MAX_CONTENT_LENGTH"] = CHUNK_SIZE + 16 * 1024 * 1024
 
 # 禁止上传的文件名（避免覆盖数据库等敏感文件）
 FORBIDDEN_NAMES = {"", ".", ".."}
+
+
+# ---------------------------------------------------------------------------
+# 跨域工具
+# ---------------------------------------------------------------------------
+
+def cors_origin_for(req) -> str:
+    """
+    判断当前请求的 Origin 是否在白名单内，返回应回显的值。
+
+    返回空字符串表示「不放行」，此时不注入任何 CORS 头，
+    浏览器自然拦截 —— 这比返回 403 更符合规范，也让非浏览器客户端不受影响。
+    """
+    origin = req.headers.get("Origin", "").strip()
+    if not origin:
+        # 非跨域请求（如 curl、服务端直连、同源页面），无需处理
+        return ""
+    if CORS_ALLOW_ALL:
+        return "*"
+    if origin.rstrip("/") in CORS_ORIGINS:
+        return origin
+    return ""
+
+
+def apply_cors(resp, origin: str):
+    """
+    把 CORS 响应头注入到响应对象上。
+
+    幂等：已注入过就直接返回。预检分支已经注入过一次，
+    之后 after_request 还会再走一遍，不防重会出现重复的 Vary 头。
+    """
+    if not origin:
+        return resp
+    if resp.headers.get("Access-Control-Allow-Origin"):
+        return resp
+    resp.headers["Access-Control-Allow-Origin"] = origin
+    resp.headers["Access-Control-Allow-Methods"] = CORS_ALLOW_METHODS
+    resp.headers["Access-Control-Allow-Headers"] = CORS_ALLOW_HEADERS
+    resp.headers["Access-Control-Expose-Headers"] = CORS_EXPOSE_HEADERS
+    resp.headers["Access-Control-Max-Age"] = str(CORS_MAX_AGE)
+    if origin != "*":
+        # 明确回显具体来源时，才允许携带凭证（Cookie）。
+        # 使用 * 时规范禁止同时开启凭证，故此处不做无条件开启。
+        resp.headers["Access-Control-Allow-Credentials"] = "true"
+        # 多来源回显必须加 Vary，否则中间缓存可能把 A 域的响应喂给 B 域
+        resp.headers["Vary"] = "Origin"
+    return resp
 
 # ---------------------------------------------------------------------------
 # 配置目录（API Key、设置项）
@@ -622,6 +712,8 @@ def _auth_guard():
     全局鉴权网关。
 
     规则：
+      - CORS 预检（OPTIONS）直接短路放行 —— 必须在鉴权之前，
+        否则浏览器拿到 401 会判定跨域失败，真正的请求根本不会发出
       - 免鉴权路径（登录页 / 登录接口 / 收藏图标）直接放行
       - 其余所有请求都要求有效凭证，否则：
           · 页面请求 → 302 跳转登录页
@@ -630,6 +722,11 @@ def _auth_guard():
     """
     path = request.path
     _AUTH_CTX.info = {"kind": "none", "key": None}
+
+    # 0) CORS 预检：无条件放行，只回 CORS 头，不碰业务逻辑
+    if request.method == "OPTIONS":
+        resp = make_response("", 204)
+        return apply_cors(resp, cors_origin_for(request))
 
     # 静态资源与免鉴权路径放行
     if path in PUBLIC_PATHS or path.startswith("/static/"):
@@ -680,6 +777,17 @@ def _dangerous_guard(path: str, kind: str):
         "error": "危险操作开关已关闭，API Key 不能执行删除 / 重命名 / 新建 / 中止上传",
         "dangerous_blocked": True,
     }), 403
+
+
+@app.after_request
+def _cors_headers(resp):
+    """
+    统一注入 CORS 响应头。
+
+    放在 after_request 而非每个路由里，是为了覆盖所有出口：
+    正常响应、错误 JSON、重定向、文件流下载，一个都不漏。
+    """
+    return apply_cors(resp, cors_origin_for(request))
 
 
 # ---------------------------------------------------------------------------
