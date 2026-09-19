@@ -20,6 +20,7 @@ import {
   type ReactNode,
 } from 'react'
 import { api, credentials, onUnauthorized } from '../api/client'
+import { uploadEngine } from '../lib/uploadEngine'
 
 export type AuthMode = 'apikey' | 'token' | 'none'
 
@@ -97,6 +98,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     credentials.clear()
     setApiKey('')
     setState({ mode: 'none', configured: false, checking: false, error: '' })
+    // 主动登出时停止上传 —— 引擎是模块级单例，不随组件卸载而停，
+    // 否则会拿着已清除的凭证一直发请求、一直 401
+    void uploadEngine.cancelAll()
   }, [])
 
   const verify = useCallback(async (): Promise<boolean> => {

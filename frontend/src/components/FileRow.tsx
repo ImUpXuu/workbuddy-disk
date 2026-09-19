@@ -49,6 +49,8 @@ interface Props {
   entry: Entry
   selected: boolean
   selectMode: boolean
+  /** 有上传任务进行中 —— 禁用删除，避免删除目标与上传目标产生竞态 */
+  uploading?: boolean
   onToggleSelect(name: string): void
   onOpen(entry: Entry): void
   onPreview(entry: Entry): void
@@ -60,6 +62,7 @@ export default function FileRow({
   entry,
   selected,
   selectMode,
+  uploading = false,
   onToggleSelect,
   onOpen,
   onPreview,
@@ -217,6 +220,7 @@ export default function FileRow({
 
         <IconButton
           label="重命名"
+          disabled={uploading}
           onClick={(e) => {
             e.stopPropagation()
             onRename(entry)
@@ -228,6 +232,7 @@ export default function FileRow({
         <IconButton
           label="删除"
           tone="danger"
+          disabled={uploading}
           onClick={(e) => {
             e.stopPropagation()
             onDelete(entry)

@@ -11,7 +11,15 @@
  * 放在局部 state 里更简单，也避免全局重渲染。
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 import { api, ApiError } from '../api/client'
 import type { Entry } from '../types/api'
 import { useToast } from '../context/ToastContext'
@@ -39,7 +47,18 @@ interface Props {
   uploading?: boolean
 }
 
-export default function FileBrowser({ onPathChange, onRequestUpload, uploading }: Props) {
+/** 暴露给父组件的方法 */
+export interface FileBrowserHandle {
+  /** 静默重新拉取当前目录（不闪骨架屏），上传完成后调用 */
+  reload(): void
+  /** 取当前所在目录（拖拽上传要拿最新值） */
+  currentPath(): string
+}
+
+const FileBrowser = forwardRef<FileBrowserHandle, Props>(function FileBrowser(
+  { onPathChange, onRequestUpload, uploading },
+  ref,
+) {
   const toast = useToast()
 
   const [path, setPath] = useState('')
@@ -87,6 +106,23 @@ export default function FileBrowser({ onPathChange, onRequestUpload, uploading }
       }
     },
     [],
+  )
+
+  // path 的镜像 ref：供命令式句柄读取「此刻」的目录，
+  // 避免闭包捕获到渲染时的旧值
+  const pathRef = useRef(path)
+  useEffect(() => {
+    pathRef.current = path
+  }, [path])
+
+  // 暴露给父组件：上传完成后静默刷新、拖拽时取当前目录
+  useImperativeHandle(
+    ref,
+    () => ({
+      reload: () => void load(pathRef.current, true),
+      currentPath: () => pathRef.current,
+    }),
+    [load],
   )
 
   // 首次加载
@@ -532,6 +568,7 @@ export default function FileBrowser({ onPathChange, onRequestUpload, uploading }
                 entry={entry}
                 selected={selected.has(entry.name)}
                 selectMode={selectMode}
+                uploading={!!uploading}
                 onToggleSelect={toggleSelect}
                 onOpen={openDir}
                 onPreview={setPreview}
@@ -589,7 +626,9 @@ export default function FileBrowser({ onPathChange, onRequestUpload, uploading }
       />
     </div>
   )
-}
+})
+
+export default FileBrowser
 
 /** 供父组件读取当前路径段（面包屑展示用） */
 export function usePathSegments(path: string) {

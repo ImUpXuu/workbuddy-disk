@@ -26,6 +26,7 @@ import type {
   UploadResponse,
   WhoamiResponse,
 } from '../types/api'
+import { registerXhrDeps, xhrPostForm } from '../lib/uploadXhr'
 
 // ═══════════════════════════════════════════════════════════════════
 // 配置
@@ -165,7 +166,13 @@ export function onUnauthorized(fn: UnauthorizedListener): () => void {
   return () => unauthorizedListeners.delete(fn)
 }
 
-function emitUnauthorized(): void {
+/**
+ * 广播「凭证失效」。
+ *
+ * 导出是为了让 XHR 上传通道（lib/uploadXhr.ts）也能触发同一套登出逻辑 ——
+ * fetch 与 XHR 两条通道必须共享 401 行为，否则上传时凭证过期不会被感知。
+ */
+export function emitUnauthorized(): void {
   unauthorizedListeners.forEach((fn) => {
     try {
       fn()
@@ -175,7 +182,8 @@ function emitUnauthorized(): void {
   })
 }
 
-function classify(status: number): ApiErrorKind {
+/** 状态码 → 错误类别。导出供 XHR 通道复用，保证两条通道提示口径一致。 */
+export function classify(status: number): ApiErrorKind {
   if (status === 401) return 'unauthorized'
   if (status === 403) return 'forbidden'
   if (status === 404) return 'notfound'
@@ -205,7 +213,7 @@ export interface RequestOptions {
 }
 
 /** 把凭证塞进 URL 查询参数（某些场景下 header 不可用时用它兜底） */
-function buildUrl(path: string, query?: RequestOptions['query']): string {
+export function buildUrl(path: string, query?: RequestOptions['query']): string {
   const url = `${API_BASE}${path}`
   const params = new URLSearchParams()
 
@@ -228,7 +236,7 @@ function buildUrl(path: string, query?: RequestOptions['query']): string {
 }
 
 /** 组装请求头：JSON 时设 Content-Type；表单交给浏览器自动带 boundary */
-function buildHeaders(isJson: boolean, auth: boolean): Headers {
+export function buildHeaders(isJson: boolean, auth: boolean): Headers {
   const h = new Headers()
   if (isJson) h.set('Content-Type', 'application/json')
 
@@ -499,17 +507,28 @@ export const api = {
     })
   },
 
-  /** 分片上传：初始化会话 */
+  /**
+   * 分片上传：初始化会话。
+   *
+   * @param chunkSize 期望的分片大小。不传则用后端默认（48MB）。
+   *                  前端传更小的值（如 8MB）是**被尊重的** ——
+   *                  后端只在 `chunkSize > CHUNK_SIZE` 时才夹回上限。
+   *                  返回值里的 chunk_size / total_chunks 才是准的，
+   *                  调用方必须以响应为准，不要自己算。
+   */
   uploadInit(
     path: string,
     name: string,
     size: number,
+    chunkSize?: number,
     signal?: AbortSignal,
   ): Promise<UploadInitResponse> {
-    return post<UploadInitResponse>('/api/upload/init', { path, name, size }, undefined, {
-      timeout: 30_000,
-      signal,
-    })
+    return post<UploadInitResponse>(
+      '/api/upload/init',
+      { path, name, size, ...(chunkSize ? { chunk_size: chunkSize } : {}) },
+      undefined,
+      { timeout: 30_000, signal },
+    )
   },
 
   /** 分片上传：传一片 */
@@ -528,6 +547,47 @@ export const api = {
       form,
       timeout: 0,
       signal,
+    })
+  },
+
+  /**
+   * 分片上传：传一片（带真实字节进度）。
+   *
+   * 与 uploadChunk 的区别：走 XHR，能通过 `xhr.upload.onprogress`
+   * 拿到已上传字节。fetch 没有上传进度事件，所以必须另开这条通道。
+   */
+  uploadChunkWithProgress(
+    uploadId: string,
+    index: number,
+    chunk: Blob,
+    onProgress?: (loaded: number, total: number) => void,
+    signal?: AbortSignal,
+  ): Promise<ApiEnvelope> {
+    const form = new FormData()
+    form.append('upload_id', uploadId)
+    form.append('index', String(index))
+    form.append('chunk', chunk)
+    return xhrPostForm<ApiEnvelope>('/api/upload/chunk', form, {
+      signal,
+      onUploadProgress: onProgress,
+    })
+  },
+
+  /**
+   * 小文件直传（带真实字节进度）。走 XHR 的理由同上。
+   */
+  uploadWithProgress(
+    path: string,
+    file: File,
+    onProgress?: (loaded: number, total: number) => void,
+    signal?: AbortSignal,
+  ): Promise<UploadResponse> {
+    const form = new FormData()
+    form.append('path', path)
+    form.append('files', file, file.name)
+    return xhrPostForm<UploadResponse>('/api/upload', form, {
+      signal,
+      onUploadProgress: onProgress,
     })
   },
 
@@ -668,3 +728,14 @@ export const api = {
     })
   },
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// XHR 通道依赖注入
+// ═══════════════════════════════════════════════════════════════════
+//
+// lib/uploadXhr.ts 需要 buildUrl / buildHeaders / classify / emitUnauthorized，
+// 但它自己被本模块 import（uploadChunkWithProgress / uploadWithProgress），
+// 直接反向 import 会形成循环依赖。所以在这里显式注入。
+//
+// 放在文件末尾，确保上面所有函数都已定义完毕再注册。
+registerXhrDeps({ buildUrl, buildHeaders, classify, emitUnauthorized })

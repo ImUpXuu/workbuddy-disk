@@ -45,6 +45,12 @@ export interface Entry {
 export interface ListResponse extends ApiEnvelope {
   path: string
   items: Entry[]
+  /** 单文件大小上限（字节）—— 前端入队时预检，避免传完才被拒 */
+  max_file_size?: number
+  /** 后端默认分片大小（字节） */
+  chunk_size?: number
+  /** 超过此大小走分片（字节）—— 前端分派的权威依据 */
+  chunk_threshold?: number
 }
 
 /** GET /api/stats */
@@ -200,11 +206,13 @@ export interface UploadCompleteResponse extends ApiEnvelope {
 /** GET /api/upload/status */
 export interface UploadStatusResponse extends ApiEnvelope {
   upload_id: string
-  name: string
+  /** 文件名 */
+  name?: string
   total_chunks: number
-  /** 已收到的分片序号 */
+  /** 已收到的分片序号（后端只回这一份，缺片由前端自己算差集） */
   received: number[]
-  missing: number[]
+  /** 文件总字节数 */
+  size?: number
 }
 
 // ═══════════════════════════════════════════════════════════════════
