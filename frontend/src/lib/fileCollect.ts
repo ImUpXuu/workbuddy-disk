@@ -4,6 +4,11 @@
  * 为什么要单独一个模块：拖拽进来的可能是**文件夹**，
  * `dataTransfer.files` 对文件夹只会给出一个空壳，必须走
  * `webkitGetAsEntry()` 递归遍历才能真正拿到里面的文件。
+ *
+ * 文件夹会**保留相对路径**（见 CollectedFile.relPath）—— 上传时后端
+ * 据此创建对应目录。依据是后端 `/api/upload` 与 `/api/upload/init`
+ * 的 `dirmode` 参数：开启后上传接口自身会幂等建目录，因此不需要
+ * 前端预调 `/api/mkdir`（那个接口在危险清单里，API Key 模式下可能被拒）。
  */
 
 /** 目录读取器（浏览器原生类型，TS 库里没有） */
@@ -20,16 +25,26 @@ interface FsEntry {
   createReader?(): FsDirReader
 }
 
+/** 从拖拽/选择里收集到的一个待上传文件 */
+export interface CollectedFile {
+  file: File
+  /**
+   * 相对「拖入根」的路径，含文件名。例：`'2024/a.jpg'`。
+   * 直接拖单个文件时就是文件名本身（`'a.jpg'`）。
+   */
+  relPath: string
+  /** 是否来自目录遍历（而非普通文件选择）—— 决定是否开启 dirmode */
+  fromDirectory: boolean
+}
+
 /**
- * 从 DataTransfer 收集文件列表，文件夹会被递归展开。
+ * 从 DataTransfer 收集文件列表，文件夹会被递归展开并保留目录结构。
  *
- * 文件夹展开策略：**扁平化上传到目标目录**，不做自动建目录。
- * 原因是后端 `/api/upload` 与 `/api/upload/init` 的 path 必须是
- * **已存在的目录**，要保留层级就得先调 /api/mkdir 逐个建目录，
- * 而 mkdir 在危险操作清单里（API Key 模式下可能被拒），
- * 失败面太大。扁平化 + 提示用户是更务实的选择。
+ * ⚠️ 已知限制：**空文件夹不会产生任何条目**（walk 只收集文件）。
+ *    空目录在网盘里价值极低，而支持它需要额外传一份目录清单，
+ *    复杂度不值得 —— UI 上会提示用户这一点。
  */
-export async function collectFilesFromDataTransfer(dt: DataTransfer): Promise<File[]> {
+export async function collectFilesFromDataTransfer(dt: DataTransfer): Promise<CollectedFile[]> {
   const items = dt.items ? Array.from(dt.items) : []
 
   // 拿 entry 需要**同步**取，dataTransfer 在异步之后会失效
@@ -43,21 +58,30 @@ export async function collectFilesFromDataTransfer(dt: DataTransfer): Promise<Fi
 
   // 不支持 entry API（或非 Chromium）时退化为普通多文件
   if (!entries.length) {
-    return dt.files ? Array.from(dt.files) : []
+    return (dt.files ? Array.from(dt.files) : []).map((file) => ({
+      file,
+      // webkitRelativePath 只在 <input webkitdirectory> 场景有值，拖拽时通常为空
+      relPath: (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name,
+      fromDirectory: false,
+    }))
   }
 
-  const out: File[] = []
+  const out: CollectedFile[] = []
   for (const entry of entries) {
-    await walk(entry, out)
+    // 顶层 prefix 为空：直接拖进来的文件 relPath 就是文件名
+    await walk(entry, out, '')
   }
   return out
 }
 
-/** 递归遍历 entry 树 */
-async function walk(entry: FsEntry, out: File[]): Promise<void> {
+/** 递归遍历 entry 树，prefix 累积相对路径 */
+async function walk(entry: FsEntry, out: CollectedFile[], prefix: string): Promise<void> {
   if (entry.isFile && entry.file) {
     try {
-      out.push(await fileOf(entry))
+      const f = await fileOf(entry)
+      // ⚠️ 浏览器安全限制：File.name 永远是纯文件名，路径只能自己拼
+      const relPath = prefix ? `${prefix}/${entry.name}` : entry.name
+      out.push({ file: f, relPath, fromDirectory: prefix !== '' })
     } catch {
       /* 单个文件读取失败不阻断其余 */
     }
@@ -65,9 +89,10 @@ async function walk(entry: FsEntry, out: File[]): Promise<void> {
   }
 
   if (entry.isDirectory && entry.createReader) {
+    const next = prefix ? `${prefix}/${entry.name}` : entry.name
     const children = await readAll(entry.createReader())
     for (const child of children) {
-      await walk(child, out)
+      await walk(child, out, next)
     }
   }
 }

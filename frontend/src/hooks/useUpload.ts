@@ -66,6 +66,9 @@ export function useUploadActions() {
     () => ({
       addFiles: (files: File[], targetPath: string) =>
         uploadEngine.addFiles(files, targetPath),
+      /** 带相对路径的文件（文件夹拖拽/选择）—— 保留目录结构 */
+      addCollected: (items: Parameters<typeof uploadEngine.addCollected>[0], targetPath: string) =>
+        uploadEngine.addCollected(items, targetPath),
       cancel: (id: string) => uploadEngine.cancel(id),
       retry: (id: string) => uploadEngine.retry(id),
       cancelAll: () => uploadEngine.cancelAll(),

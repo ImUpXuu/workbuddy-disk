@@ -29,11 +29,13 @@ import PreviewModal from './PreviewModal'
 import PromptModal from './PromptModal'
 import ConfirmModal from './ConfirmModal'
 import {
+  ActionSheet,
   Button,
   EmptyState,
   Icon,
   ICONS,
   SkeletonRows,
+  type SheetItem,
 } from './ui'
 
 type SortKey = 'name' | 'size' | 'mtime'
@@ -77,6 +79,8 @@ const FileBrowser = forwardRef<FileBrowserHandle, Props>(function FileBrowser(
   const [renaming, setRenaming] = useState<Entry | null>(null)
   const [deleting, setDeleting] = useState<Entry[] | null>(null)
   const [mkdirOpen, setMkdirOpen] = useState(false)
+  /** 移动端长按唤出的操作抽屉：非空即打开，值是被操作的那一项 */
+  const [sheetFor, setSheetFor] = useState<Entry | null>(null)
   const [busy, setBusy] = useState(false)
   const [batchBusy, setBatchBusy] = useState(false)
   const [batchProgress, setBatchProgress] = useState(0)
@@ -280,8 +284,75 @@ const FileBrowser = forwardRef<FileBrowserHandle, Props>(function FileBrowser(
     }
   }
 
+  /**
+   * 下载单个文件（供长按菜单复用）。
+   *
+   * 抽出来是因为「单个下载」原来只有 FileRow 里有实现，而长按菜单
+   * 也需要它。复制一份就会有两套错误提示与进度口径，早晚不一致。
+   * FileRow 内部那份保留（它有自己的 downloading 菊花状态），
+   * 这里是给没有局部状态的调用方用的。
+   */
+  async function downloadOne(entry: Entry) {
+    const id = toast.info(`开始下载 ${entry.name}`, '准备中…')
+    try {
+      await api.download(entry.path, entry.name, (loaded, total) => {
+        if (!total) return
+        const pct = Math.round((loaded / total) * 100)
+        toast.dismiss(id)
+        if (pct < 100) toast.info(`下载中 ${pct}%`, entry.name)
+      })
+      toast.success('下载完成', entry.name)
+    } catch (err) {
+      toast.error('下载失败', err instanceof ApiError ? err.friendly : '请重试')
+    }
+  }
+
+  /**
+   * 长按菜单的条目。
+   *
+   * 与桌面端悬停出的按钮集合保持一致（少一个「预览」在文件夹上），
+   * 顺序也照抄：预览 → 下载 → 重命名 → 删除。
+   */
+  function buildSheetItems(entry: Entry): SheetItem[] {
+    const items: SheetItem[] = []
+
+    if (!entry.is_dir) {
+      items.push({
+        key: 'preview',
+        label: '预览',
+        icon: ICONS.eye,
+        onClick: () => setPreview(entry),
+      })
+      items.push({
+        key: 'download',
+        label: '下载',
+        icon: ICONS.download,
+        onClick: () => void downloadOne(entry),
+      })
+    }
+
+    items.push({
+      key: 'rename',
+      label: '重命名',
+      icon: ICONS.rename,
+      disabled: uploading,
+      onClick: () => setRenaming(entry),
+    })
+    items.push({
+      key: 'delete',
+      label: '删除',
+      icon: ICONS.trash,
+      danger: true,
+      disabled: uploading,
+      onClick: () => setDeleting([entry]),
+    })
+
+    return items
+  }
+
   // 键盘快捷键：仅当没有弹窗时生效
-  const anyModalOpen = !!(preview || renaming || deleting || mkdirOpen)
+  // 抽屉也算「弹窗」：它锁了 body 滚动，此时放快捷键会与抽屉互相打架
+  const anyModalOpen = !!(preview || renaming || deleting || mkdirOpen || sheetFor)
   useEffect(() => {
     if (anyModalOpen) return
     const onKey = (e: KeyboardEvent) => {
@@ -574,6 +645,7 @@ const FileBrowser = forwardRef<FileBrowserHandle, Props>(function FileBrowser(
                 onPreview={setPreview}
                 onRename={setRenaming}
                 onDelete={(e) => setDeleting([e])}
+                onLongPress={setSheetFor}
               />
             ))}
           </div>
@@ -623,6 +695,17 @@ const FileBrowser = forwardRef<FileBrowserHandle, Props>(function FileBrowser(
         confirmText="删除"
         onCancel={() => setDeleting(null)}
         onConfirm={() => deleting && void doDelete(deleting)}
+      />
+
+      {/* 移动端长按唤出的操作抽屉。
+          z-index 比 Modal 低一档（70 vs 80）—— 从抽屉点「删除」后
+          弹出的确认框必须盖在抽屉之上，否则遮罩会挡住确认按钮。 */}
+      <ActionSheet
+        open={!!sheetFor}
+        onClose={() => setSheetFor(null)}
+        title={sheetFor?.name}
+        subtitle={sheetFor ? (sheetFor.is_dir ? '文件夹' : sheetFor.size_h) : undefined}
+        items={sheetFor ? buildSheetItems(sheetFor) : []}
       />
     </div>
   )

@@ -321,3 +321,15 @@
   0% { opacity: 0; transform: scale(0.9); }
   100% { opacity: 1; transform: scale(1); }
 }
+
+/* 底部抽屉：从屏幕下沿滑入。
+   位移用百分比而不是固定 px —— 抽屉高度随条目数变化，
+   固定值在小抽屉上会「滑过头」，视觉上是先冲出一截再弹回。
+
+   ⚠️ 用 translateY(100%) 而不是 translateY(120%)：前者正好是自身高度，
+      配合父级 overflow-hidden 不会露出半截；后者在低端机上因
+      合成层裁剪时机不同，偶尔能瞥见一条边缘。 */
+@keyframes sheet-up {
+  from { transform: translateY(100%); }
+  to { transform: translateY(0); }
+}

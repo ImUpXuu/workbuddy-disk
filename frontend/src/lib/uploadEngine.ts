@@ -24,7 +24,8 @@
 
 import { ApiError, api, onUnauthorized } from '../api/client'
 import type { TaskStatus, UploadTask } from '../types/api'
-import { errorText } from './utils'
+import { errorText, normalizeRelPath } from './utils'
+import type { CollectedFile } from './fileCollect'
 
 // ═══════════════════════════════════════════════════════════════════
 // 常量与纯函数（可单测）
@@ -85,6 +86,29 @@ function chunkByteLength(index: number, chunkSize: number, totalSize: number): n
   return Math.max(0, Math.min(chunkSize, totalSize - start))
 }
 
+// ── 路径拼接（文件夹上传用）─────────────────────────────────────
+
+/** 取相对路径的目录部分（不含文件名）。无目录时返回 '' */
+function dirnameOf(relPath: string): string {
+  const i = relPath.lastIndexOf('/')
+  return i < 0 ? '' : relPath.slice(0, i)
+}
+
+/** 取相对路径的文件名部分 */
+function baseName(relPath: string): string {
+  const i = relPath.lastIndexOf('/')
+  return i < 0 ? relPath : relPath.slice(i + 1)
+}
+
+/** 拼接 URL 风格路径，自动处理空段与多余斜杠 */
+function joinPath(parent: string, child: string): string {
+  const a = parent.replace(/^\/+|\/+$/g, '')
+  const b = child.replace(/^\/+|\/+$/g, '')
+  if (!a) return b
+  if (!b) return a
+  return `${a}/${b}`
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // 对外类型
 // ═══════════════════════════════════════════════════════════════════
@@ -125,6 +149,13 @@ export interface TaskView {
   mode: 'direct' | 'chunked' | 'pending'
   /** 上传完成时后端实际落盘的文件名（可能因重名被改名） */
   finalName?: string
+  /**
+   * 相对目标目录的子路径（含文件名）。仅文件夹上传时有值，
+   * 例如 '2024/a.jpg'。用于在提示里告诉用户文件实际落在哪。
+   */
+  relPath?: string
+  /** 本任务是否开启了目录结构（dirmode）上传 */
+  dirmode: boolean
 }
 
 export interface UploadSnapshot {
@@ -156,6 +187,19 @@ type WarningListener = (message: string) => void
 /** 引擎内部任务：在 TaskView 基础上带运行时字段 */
 interface TaskInternal extends TaskView {
   file: File
+  /**
+   * 最终目标目录 = joinPath(targetPath, dirname(relPath))。
+   *
+   * 为什么不能只靠 filename 携带目录：上传走的是 multipart，后端拿到的是
+   * `File.name` —— 而浏览器不允许改写它（永远是纯文件名）。所以子目录
+   * 必须并进 path 字段，由 destDir 承载。
+   *
+   * ⚠️ 在 addCollected 时**快照**，之后不再变化 —— 重试（needResync）
+   *    也复用同一个值，否则会落到别的目录。
+   */
+  destDir: string
+  /** 最终落盘文件名（= baseName(relPath)） */
+  destName: string
   /** Map<分片序号, 该片已上传字节>；与 chunkDone 互斥 */
   chunkLoaded: Map<number, number>
   /** 已完成的分片序号 */
@@ -354,22 +398,49 @@ export class UploadEngine {
   // ── 入队 ────────────────────────────────────────────────────
 
   /**
-   * 把文件加入上传队列。
+   * 把普通文件加入上传队列（无目录结构）。
    *
    * @param targetPath 目标目录。**在此刻快照**，之后用户切换目录不影响本任务。
    * @returns 新建任务的 id 列表
    */
   addFiles(files: File[], targetPath: string): string[] {
+    return this.addCollected(
+      files.map((file) => ({ file, relPath: file.name, fromDirectory: false })),
+      targetPath,
+    )
+  }
+
+  /**
+   * 把「带相对路径的文件」加入队列 —— 文件夹拖拽/选择的入口。
+   *
+   * 对来自目录遍历的条目开启 dirmode：目标目录 = targetPath + 相对目录，
+   * 由后端按需幂等创建。这样无需前端预调 /api/mkdir（那是危险操作，
+   * API Key 模式下可能被 403 挡掉）。
+   *
+   * @returns 新建任务的 id 列表
+   */
+  addCollected(items: CollectedFile[], targetPath: string): string[] {
     const ids: string[] = []
 
-    for (const file of files) {
+    for (const { file, relPath, fromDirectory } of items) {
+      const safeRel = normalizeRelPath(relPath) || file.name
+      const destName = baseName(safeRel)
+      // 顶层文件（无子目录）即便来自目录遍历，也退化为普通直传更省事
+      const sub = dirnameOf(safeRel)
+      const dirmode = fromDirectory && sub !== ''
+      const destDir = dirmode ? joinPath(targetPath, sub) : targetPath
+
       const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
       const task: TaskInternal = {
         id,
         file,
-        name: file.name,
+        name: destName,
         size: file.size,
         targetPath,
+        destDir,
+        destName,
+        relPath: dirmode ? safeRel : undefined,
+        dirmode,
         status: 'queued',
         progress: 0,
         loaded: 0,
@@ -396,10 +467,8 @@ export class UploadEngine {
       this.tasks.set(id, task)
       if (task.status === 'queued') {
         this.queue.push(id)
-        ids.push(id)
-      } else {
-        ids.push(id)
       }
+      ids.push(id)
     }
 
     this.emit()
@@ -508,7 +577,7 @@ export class UploadEngine {
   /** 直传（小文件 / 空文件） */
   private async uploadDirect(task: TaskInternal, signal: AbortSignal): Promise<void> {
     const res = await api.uploadWithProgress(
-      task.targetPath,
+      task.destDir,
       task.file,
       (loaded) => {
         task.loaded = Math.min(task.size, loaded)
@@ -517,6 +586,7 @@ export class UploadEngine {
         this.emitThrottled()
       },
       signal,
+      task.dirmode,
     )
 
     // 后端重名时不覆盖，会自动改名 —— 记下真实落盘名
@@ -534,11 +604,12 @@ export class UploadEngine {
     if (!task.uploadId) {
       const wanted = chooseChunkSize(this.cfg.chunkSize)
       const init = await api.uploadInit(
-        task.targetPath,
-        task.name,
+        task.destDir,
+        task.destName,
         task.size,
         wanted,
         signal,
+        task.dirmode,
       )
       task.uploadId = init.upload_id
       // ⚠️ 以后端返回为准 —— 后端可能夹取了 chunk_size
@@ -778,6 +849,8 @@ function toView(t: TaskInternal): TaskView {
     doneChunks: t.doneChunks,
     mode: t.mode,
     finalName: t.finalName,
+    relPath: t.relPath,
+    dirmode: t.dirmode,
   }
 }
 

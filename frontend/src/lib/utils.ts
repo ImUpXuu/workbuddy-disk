@@ -227,6 +227,43 @@ export function isImage(name: string): boolean {
   return kindOf(name, false) === 'image'
 }
 
+/** 视频类 —— 与 EXT_MAP 的 video 段保持一致 */
+export function isVideo(name: string): boolean {
+  return kindOf(name, false) === 'video'
+}
+
+/** 后端 Pillow 无法解码的图片格式（发请求只会拿到 415，白费一次往返） */
+const NO_THUMB_EXT = new Set(['svg', 'heic'])
+
+/**
+ * 是否值得向后端要缩略图（图片 + 视频）。
+ *
+ * 比 isImage 更宽（含视频），但也更窄 —— 排除了 Pillow 默认构建
+ * 解不开的格式：svg 不是栅格图，heic 需要 pillow-heif 插件。
+ * 这两类直接走 emoji，省掉一次必然失败的请求。
+ */
+export function hasThumbnail(name: string): boolean {
+  const k = kindOf(name, false)
+  if (k === 'video') return true
+  if (k !== 'image') return false
+  return !NO_THUMB_EXT.has(extOf(name))
+}
+
+/**
+ * 归一化相对路径：统一分隔符、吃掉 . 与 ..、去掉空段。
+ *
+ * 用于文件夹上传。浏览器给的 `File.name` 永远是纯文件名，
+ * 目录信息只能靠我们自己拼 —— 拼接结果必须先过这一层，
+ * 再交给后端做第二道校验。
+ */
+export function normalizeRelPath(p: string): string {
+  return p
+    .replace(/\\/g, '/')
+    .split('/')
+    .filter((s) => s && s !== '.' && s !== '..')
+    .join('/')
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // 其他
 // ═══════════════════════════════════════════════════════════════════

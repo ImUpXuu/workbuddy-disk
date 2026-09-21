@@ -170,6 +170,8 @@ export interface UploadResultItem {
   size?: number
   size_h?: string
   error?: string
+  /** 相对存储根的完整路径（含目录）。文件夹上传时用于对账 */
+  rel_path?: string
 }
 
 /** POST /api/upload —— 小文件直传（表单字段名是 files，复数） */

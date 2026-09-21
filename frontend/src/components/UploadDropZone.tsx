@@ -79,9 +79,10 @@ export default function UploadDropZone({ getTargetPath, children }: Props) {
       //    React 事件对象会被回收，异步之后再访问就是空的
       const dt = e.dataTransfer
       collectFilesFromDataTransfer(dt)
-        .then((files) => {
-          if (!files.length) return
-          uploadEngine.addFiles(files, getTargetPath())
+        .then((items) => {
+          if (!items.length) return
+          // 走 addCollected：文件夹会带上相对路径，保留目录结构上传
+          uploadEngine.addCollected(items, getTargetPath())
         })
         .catch(() => {
           /* 收集失败静默 —— 用户会从「没有反应」之外看到别的问题 */
@@ -109,6 +110,10 @@ export default function UploadDropZone({ getTargetPath, children }: Props) {
   return (
     <div
       className="relative flex min-h-0 flex-1 flex-col"
+      // 稳定的测试锚点：端到端测试要往真实 DOM 上派发 drop 事件，
+      // 靠 className 特征去猜容器太脆（改个样式就 miss）。这个属性
+      // 只用于定位，不参与任何运行时逻辑。
+      data-dropzone=""
       onDragEnter={onDragEnter}
       onDragOver={onDragOver}
       onDragLeave={onDragLeave}

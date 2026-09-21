@@ -230,6 +230,166 @@ export function Modal({ open, onClose, title, children, footer, size = 'md' }: M
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// 底部抽屉（ActionSheet）—— 移动端长按文件唤出的操作菜单
+// ═══════════════════════════════════════════════════════════════════
+//
+// 为什么不用 Modal 复用：移动端的操作菜单应该从底部推上来（拇指可达区），
+// 而不是屏幕正中。这是 iOS/Android 的原生习惯，用户不需要学习。
+//
+// z-index 分层（三层必须严格递增，否则会出现「弹窗盖住抽屉」的错乱）：
+//   z-[60] UploadPanel  上传面板
+//   z-[69] 抽屉遮罩
+//   z-[70] 抽屉本体
+//   z-[80] Modal        重命名/删除确认等二次弹窗
+//
+// 抽屉的 z 必须**低于** Modal：用户从抽屉点「删除」后会弹出确认框，
+// 那个确认框必须盖在抽屉之上，否则抽屉的遮罩会挡住用户要点的按钮。
+
+export interface SheetItem {
+  key: string
+  label: string
+  /** 图标路径（ICONS 里的值） */
+  icon: string
+  /** 危险操作：红色呈现 */
+  danger?: boolean
+  disabled?: boolean
+  onClick(): void
+}
+
+interface ActionSheetProps {
+  open: boolean
+  onClose(): void
+  /** 标题，一般是文件名 —— 让用户确认操作对象没点错 */
+  title?: string
+  /** 副标题，例如「文件夹」或文件大小 */
+  subtitle?: string
+  items: SheetItem[]
+}
+
+export function ActionSheet({ open, onClose, title, subtitle, items }: ActionSheetProps) {
+  const panelRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    document.addEventListener('keydown', onKey)
+
+    // 锁滚动：抽屉后面的列表还能滚的话，长按拖动会带着列表一起动，
+    // 手感很怪，也容易误触发第二次长按
+    const prevOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    panelRef.current?.focus()
+
+    return () => {
+      document.removeEventListener('keydown', onKey)
+      document.body.style.overflow = prevOverflow
+    }
+  }, [open, onClose])
+
+  if (!open) return null
+
+  /** 先关抽屉再执行动作。
+   *
+   *  顺序很重要：像「重命名」「删除确认」这类动作会打开 Modal，
+   *  而 Modal 与抽屉各自都会写 document.body.style.overflow 并在
+   *  卸载时恢复。如果抽屉后关，它的恢复动作会把 Modal 刚设上的
+   *  'hidden' 覆盖回 ''，导致背景可滚动。
+   *  先 onClose() 让抽屉的清理先跑完，Modal 再设就是最终值。
+   */
+  function run(item: SheetItem) {
+    if (item.disabled) return
+    onClose()
+    item.onClick()
+  }
+
+  return (
+    <div className="fixed inset-0 z-[70] flex flex-col justify-end sm:hidden">
+      {/* 遮罩：点击关闭。用 fade-in 让它和抽屉同步出现 */}
+      <div
+        className="absolute inset-0 bg-slate-900/35 animate-[fade-in_140ms_ease-out]"
+        onClick={onClose}
+        aria-hidden
+      />
+
+      <div
+        ref={panelRef}
+        role="dialog"
+        aria-modal="true"
+        aria-label={title || '文件操作'}
+        tabIndex={-1}
+        className={cn(
+          'relative w-full bg-white focus:outline-none',
+          // 只圆上两个角 —— 下沿要贴着屏幕边缘，圆角会露出底色
+          'rounded-t-3xl border-t-2 border-x-2 border-[--color-sky-400]',
+          'pb-[max(0.75rem,env(safe-area-inset-bottom))]',
+          'animate-[sheet-up_200ms_cubic-bezier(0.16,1,0.3,1)]',
+        )}
+      >
+        {/* 抓手：移动端用户会自然地想「往下拖」关掉它 */}
+        <div className="flex justify-center pt-2.5" aria-hidden>
+          <span className="h-1.5 w-10 rounded-full bg-[--color-sky-100]" />
+        </div>
+
+        {(title || subtitle) && (
+          <div className="px-5 pb-3 pt-3.5 text-center">
+            <p className="truncate-1 text-sm font-black text-[--color-ink]">{title}</p>
+            {subtitle && (
+              <p className="mt-0.5 text-[11px] font-medium text-[--color-ink-faint]">
+                {subtitle}
+              </p>
+            )}
+          </div>
+        )}
+
+        <ul className="px-3 pb-1">
+          {items.map((item) => (
+            <li key={item.key}>
+              <button
+                type="button"
+                disabled={item.disabled}
+                onClick={() => run(item)}
+                // 稳定的测试锚点。用文案定位会被图标 svg 污染
+                // accessible name（有时是「删除」有时是「🗑️ 删除」），
+                // 不同浏览器/版本还不一致。key 是确定的。
+                data-sheet-item={item.key}
+                className={cn(
+                  'flex w-full items-center gap-3 rounded-2xl px-4 py-3.5 text-left transition-colors',
+                  // 触摸目标 ≥44px：Apple HIG 的最小可点击尺寸，py-3.5 + 图标已经超过
+                  'disabled:opacity-40',
+                  item.danger
+                    ? 'text-red-600 active:bg-red-50'
+                    : 'text-[--color-ink] active:bg-[--color-sky-50]',
+                )}
+              >
+                <Icon
+                  d={item.icon}
+                  className={cn('size-5', item.danger ? 'text-red-500' : 'text-[--color-sky-600]')}
+                />
+                <span className="text-sm font-bold">{item.label}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+
+        {/* 取消按钮单独一档，和上面的操作拉开距离 —— 防止误触 */}
+        <div className="border-t-2 border-[--color-sky-100] px-3 pt-2">
+          <button
+            type="button"
+            onClick={onClose}
+            className="w-full rounded-2xl px-4 py-3.5 text-center text-sm font-black text-[--color-ink-soft] active:bg-[--color-sky-50]"
+          >
+            取消
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // 空状态 / 骨架
 // ═══════════════════════════════════════════════════════════════════
 

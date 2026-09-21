@@ -84,9 +84,13 @@ export default function DiskPage() {
         }
 
         const current = browserRef.current?.currentPath() ?? ''
+        // 文件夹上传时文件可能落在 targetPath 的子目录里，
+        // 而列表不递归，所以「看不到新文件」是正常的 —— 提示里带上完整路径。
         if (task.targetPath !== current) {
-          // 传到别的目录了，刷新当前列表也看不到
-          toast.info(`「${task.name}」已上传到 ${task.targetPath || '根目录'}`)
+          const where = task.dirmode && task.relPath
+            ? task.relPath
+            : task.targetPath || '根目录'
+          toast.info(`「${task.finalName || task.name}」已上传到 ${where}`)
           return
         }
 

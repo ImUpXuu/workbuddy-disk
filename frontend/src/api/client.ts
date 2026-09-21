@@ -522,10 +522,11 @@ export const api = {
     size: number,
     chunkSize?: number,
     signal?: AbortSignal,
+    dirmode = false,
   ): Promise<UploadInitResponse> {
     return post<UploadInitResponse>(
       '/api/upload/init',
-      { path, name, size, ...(chunkSize ? { chunk_size: chunkSize } : {}) },
+      { path, name, size, dirmode, ...(chunkSize ? { chunk_size: chunkSize } : {}) },
       undefined,
       { timeout: 30_000, signal },
     )
@@ -581,9 +582,12 @@ export const api = {
     file: File,
     onProgress?: (loaded: number, total: number) => void,
     signal?: AbortSignal,
+    dirmode = false,
   ): Promise<UploadResponse> {
     const form = new FormData()
     form.append('path', path)
+    // 仅在需要时带上，保持请求体最小
+    if (dirmode) form.append('dirmode', 'true')
     form.append('files', file, file.name)
     return xhrPostForm<UploadResponse>('/api/upload', form, {
       signal,
@@ -658,6 +662,22 @@ export const api = {
    */
   async fetchObjectUrl(path: string, signal?: AbortSignal): Promise<string> {
     const blob = await api.fetchBlob(path, undefined, signal)
+    return URL.createObjectURL(blob)
+  },
+
+  /**
+   * 取媒体缩略图的 Object URL（服务端生成的 WebP）。
+   *
+   * 与 fetchObjectUrl 的区别：
+   *   - 走 /api/thumbnail 而不是 /api/download，服务端已压到 ~300px，
+   *     列表里几十张图的流量与解码开销都小得多
+   *   - 无缩略图时后端返回 404 / 415（类型不支持、生成失败），
+   *     调用方应当回退到 emoji 图标，而不是当成错误提示用户
+   *
+   * ⚠️ 调用方负责 URL.revokeObjectURL()
+   */
+  async fetchThumbnailUrl(path: string, signal?: AbortSignal): Promise<string> {
+    const blob = await requestBlob('/api/thumbnail', { path }, undefined, signal)
     return URL.createObjectURL(blob)
   },
 
