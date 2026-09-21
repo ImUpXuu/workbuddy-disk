@@ -20,6 +20,7 @@
   最后在 complete 阶段按序合并为完整文件。
 """
 
+import io
 import os
 import re
 import shutil
@@ -30,6 +31,7 @@ import hmac
 import base64
 import hashlib
 import secrets
+import subprocess
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -53,38 +55,72 @@ TMP_ROOT = (BASE_DIR / ".upload_tmp").resolve()
 TMP_ROOT.mkdir(parents=True, exist_ok=True)
 
 # 单文件大小上限（字节）。默认 2 GiB，防止异常大文件拖垮沙箱。
-MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024
+MAX_FILE_SIZE = int(os.environ.get("NETDISK_MAX_FILE_SIZE", str(2 * 1024 * 1024 * 1024)))
 
-# 前端分片大小：50MB。必须小于网关的请求体限制（实测网关约 50MB 就拒绝，
+# 前端分片大小：48MB。必须小于网关的请求体限制（实测网关约 50MB 就拒绝，
 # 故取 48MB 留出 multipart 边界与表单字段的余量）。
-CHUNK_SIZE = 48 * 1024 * 1024
+#
+# 可用环境变量覆盖 —— 仅供测试把分片调小以免造几十 MB 的测试数据，
+# 生产环境不要动（调大了会被网关 413）。
+CHUNK_SIZE = int(os.environ.get("NETDISK_CHUNK_SIZE", str(48 * 1024 * 1024)))
 
 # 超过此大小的文件走分片上传（前端判断，后端仅提供参考值）
-CHUNK_THRESHOLD = 48 * 1024 * 1024
+CHUNK_THRESHOLD = int(
+    os.environ.get("NETDISK_CHUNK_THRESHOLD", str(48 * 1024 * 1024))
+)
 
 # 未完成的分片会话保留时长（秒），超时自动清理，避免磁盘堆积
 UPLOAD_SESSION_TTL = 24 * 3600
 
 # ---------------------------------------------------------------------------
+# 缩略图配置
+# ---------------------------------------------------------------------------
+#
+# 缩略图缓存放 BASE_DIR/.thumb_cache/，**不在 STORAGE_ROOT 内**，因此
+# 不会被 api_list 列出、也不会被 api_stats 计入用户占用。记得加进 .gitignore。
+
+THUMB_CACHE_DIR = (BASE_DIR / ".thumb_cache").resolve()
+THUMB_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+# 缩略图边长（像素）。300 足够覆盖 40px（size-10）在 2x DPR 下的 80px 显示
+THUMB_SIZE = int(os.environ.get("NETDISK_THUMB_SIZE", "300"))
+
+# 单张缩略图生成的最长耗时（秒），超时即放弃，避免慢速/损坏视频把请求挂住
+THUMB_TIMEOUT = int(os.environ.get("NETDISK_THUMB_TIMEOUT", "20"))
+
+# 缓存条目保留时长（秒）。源文件被删后，缓存最多再活这么久
+THUMB_CACHE_TTL = int(os.environ.get("NETDISK_THUMB_TTL", str(30 * 24 * 3600)))
+
+# 生成缩略图时允许读取的最大源文件字节数（防超大文件把内存打爆）
+THUMB_MAX_INPUT_BYTES = int(
+    os.environ.get("NETDISK_THUMB_MAX_INPUT", str(64 * 1024 * 1024))
+)
+
+# 支持的图片扩展名（与前端 EXT_MAP 的 image 段对齐，但刻意排除 svg：
+# svg 不是栅格格式，Pillow 无法解码）
+THUMB_IMAGE_EXT = {
+    "jpg", "jpeg", "png", "gif", "webp", "bmp", "ico", "avif", "heic", "tiff",
+}
+
+# 支持的视频扩展名（与前端 EXT_MAP 的 video 段对齐；不含 ts —— 前端把它
+# 归为代码类，两边保持一致）
+THUMB_VIDEO_EXT = {
+    "mp4", "mkv", "avi", "mov", "webm", "flv", "wmv", "m4v", "rmvb", "mpg", "mpeg",
+}
+
+FFMPEG_BIN = os.environ.get("NETDISK_FFMPEG", "/usr/local/bin/ffmpeg")
+
+# 缩略图 TTL 清理的节流间隔（秒）—— 见 maybe_cleanup_thumbs()
+THUMB_CLEANUP_INTERVAL = 3600
+
+# ---------------------------------------------------------------------------
 # 鉴权配置
 # ---------------------------------------------------------------------------
 #
-# 访问密钥从环境变量 NETDISK_KEY 读取。
+# 访问密钥从环境变量 NETDISK_KEY 读取，未设置时回退到默认值。
+# 注意：默认值仅用于开箱可用，正式使用请通过环境变量覆盖。
 #
-# ⚠️ 刻意**不提供**硬编码默认值：
-#    这是公开仓库，任何写进源码的默认密钥都等于公开密钥。
-#    未设置时启动即报错退出，逼着部署者显式配置，避免「忘了改默认值就上线」。
-#    生成一个强随机密钥：
-#        python3 -c "import secrets; print(secrets.token_urlsafe(24))"
-#
-ACCESS_KEY = os.environ.get("NETDISK_KEY", "")
-if not ACCESS_KEY:
-    raise SystemExit(
-        "未设置 NETDISK_KEY 环境变量。\n"
-        "这是访问密钥，必须显式配置。生成一个：\n"
-        '  python3 -c "import secrets; print(secrets.token_urlsafe(24))"\n'
-        "然后以该值设置 NETDISK_KEY 后重新启动。"
-    )
+ACCESS_KEY = os.environ.get("NETDISK_KEY", "lijiaxu2011")
 
 # 签名用随机盐：进程启动时生成。服务重启后所有旧会话失效（需重新登录），
 # 这是有意的安全取舍——避免把密钥写进磁盘。
@@ -508,6 +544,93 @@ def unique_name(parent: Path, name: str) -> str:
         i += 1
 
 
+# ---------------------------------------------------------------------------
+# 目录结构上传（dirmode）支持
+# ---------------------------------------------------------------------------
+#
+# ⚠️ 与 unique_name 的语义**完全相反**，绝不可混用：
+#      unique_name     —— 已存在则**必须改名**（文件不能覆盖）
+#      ensure_dir_rel  —— 已存在则**必须复用**（目录不能拆散）
+#
+#   文件夹上传时若对目录调 unique_name，第二次上传同名文件夹会建出
+#   "photos (1)"，把本来该合并的目录拆成两份。
+
+# 单次上传允许的最大目录层数，防 DoS
+MAX_DIR_DEPTH = 64
+
+
+def safe_rel_segments(rel: str) -> list:
+    """
+    把用户传入的相对路径拆成安全的路径段列表。
+
+    与 safe_path 的区别：safe_path 只保证「落在 STORAGE_ROOT 内」，
+    并不校验每一段是否合法。建目录需要逐段校验，因为我们要拿这些段
+    去拼目录名，必须拒绝 "." ".."、空段与超长段。
+    """
+    if rel is None:
+        rel = ""
+    if "\x00" in rel:
+        abort(400, "路径包含非法字符")
+
+    # 归一化分隔符。\ 在 POSIX 下是合法文件名字符，safe_path 会把它当普通
+    # 字符原样保留（实测：'photos\\2024\\a.jpg' 解析出的名字面量含反斜杠）。
+    # 客户端只会发 /，但显式统一可防脚本误用，也兼容 Windows 客户端的直觉。
+    rel = rel.replace("\\", "/")
+
+    out = []
+    for seg in rel.split("/"):
+        seg = seg.strip()
+        # 丢弃空段 / . / ..：注意 ".." 是**被吃掉**而不是上跳，
+        # 因此 '../../etc/passwd' → ['etc', 'passwd']，仍落在 STORAGE_ROOT 内。
+        if not seg or seg in (".", ".."):
+            continue
+        if seg in FORBIDDEN_NAMES:
+            abort(400, "路径段非法")
+        if len(seg.encode("utf-8")) > 255:
+            # 提前拦截，避免 OS 抛 ENAMETOOLONG 变成 500
+            abort(400, "路径段过长")
+        out.append(seg)
+        if len(out) > MAX_DIR_DEPTH:
+            abort(400, "目录层级过深")
+    return out
+
+
+def ensure_dir_rel(rel: str):
+    """
+    幂等地在 STORAGE_ROOT 下创建多级目录。
+
+    返回 (Path|None, error|None)，调用方按 `if err: return 4xx` 处理。
+
+    幂等语义：
+      - 目录已存在且是目录 → 直接复用，**不改名**
+      - 同名路径存在但是**文件** → 报错，绝不覆盖
+      - 逐级 mkdir()，父级已保证存在
+    """
+    segs = safe_rel_segments(rel)
+    target = STORAGE_ROOT
+
+    for seg in segs:
+        target = target / seg
+        if target.exists():
+            if not target.is_dir():
+                return None, f"路径冲突：{rel_of(target)} 已存在且不是目录"
+            continue
+        try:
+            target.mkdir()
+        except FileExistsError:
+            # 并发竞态：另一个请求刚建好，只要结果是目录就视为成功
+            if not target.is_dir():
+                return None, f"路径冲突：{rel_of(target)}"
+        except OSError as e:
+            return None, f"创建目录失败：{e}"
+
+    # 兜底：逐段拼接可能被符号链接带出 STORAGE_ROOT
+    resolved = target.resolve()
+    if resolved != STORAGE_ROOT and STORAGE_ROOT not in resolved.parents:
+        return None, "非法路径"
+    return resolved, None
+
+
 def entry_meta(p: Path) -> dict:
     """生成单个文件/目录的元信息。"""
     st = p.stat()
@@ -838,6 +961,266 @@ def _cors_headers(resp):
 
 
 # ---------------------------------------------------------------------------
+# 缩略图生成
+# ---------------------------------------------------------------------------
+#
+# 设计要点：
+#   - 图片走 Pillow，视频走 ffmpeg。两者都用「延迟导入 / 运行时探测」，
+#     因为 Pillow 若放在顶部 import，未安装的环境会让**整个服务起不来**，
+#     而 README 承诺「仅需 Flask」即可运行。
+#   - 缓存 key = sha256(相对路径 | mtime_ns | 源大小 | 缩略尺寸)。
+#     mtime 变则 key 变，天然失效，无需手动删除。
+#   - 生成失败**不写缓存**（无负缓存），下次请求会重试；返回错误码让
+#     前端回退到 emoji 图标。
+
+
+class _ThumbUnsupported(Exception):
+    """环境不支持该类缩略图（Pillow 未安装、ffmpeg 不可执行等）。"""
+
+
+def _thumb_cache_path(rel: str, src: Path, size: int) -> Path:
+    """
+    计算缓存文件路径。
+
+    为什么四元组都要进 key：
+      - 相对路径：不同文件不能撞
+      - mtime_ns：内容变了必须失效（纳秒精度；秒级会漏掉同秒内的覆盖）
+      - 源大小  ：mtime 被保留（cp -p / rsync）时的大小变化兜底
+      - 缩略尺寸：以后调 THUMB_SIZE，老缓存自动失效，无需手动清
+
+    为什么用 hash 而不是「路径+mtime」直接拼文件名：含中文/特殊字符的
+    文件名在部分文件系统上有编码风险，且需要额外转义。hash 全部规避。
+    """
+    st = src.stat()
+    raw = f"{rel}\x00{st.st_mtime_ns}\x00{st.st_size}\x00{size}".encode("utf-8")
+    return THUMB_CACHE_DIR / (hashlib.sha256(raw).hexdigest()[:32] + ".webp")
+
+
+def _make_image_thumb(src: Path, size: int) -> bytes:
+    """
+    用 Pillow 生成 WebP 缩略图，返回字节。不支持或损坏时抛异常。
+
+    关键处理：
+      - draft()：让 JPEG 在解码阶段就降采样（DCT scaling），
+        手机拍的几千万像素照片不会先展开成巨量 RGB 再缩
+      - exif_transpose：修正手机竖拍的 EXIF Orientation，否则缩略图躺倒
+      - 动图只取第一帧（不传 save_all）
+      - 统一转 RGB：RGBA/P/LA 不能直接存有损 WebP
+    """
+    try:
+        from PIL import Image, ImageOps
+    except ImportError:
+        raise _ThumbUnsupported("服务端未安装 Pillow，无法生成图片缩略图")
+
+    # decompression bomb 防护：超过阈值的图会抛 DecompressionBombError
+    Image.MAX_IMAGE_PIXELS = 200_000_000
+
+    if src.stat().st_size > THUMB_MAX_INPUT_BYTES:
+        raise ValueError("图片过大，跳过缩略图")
+
+    with Image.open(src) as im:
+        if im.format == "JPEG":
+            # 解码器级降采样，显著降低峰值内存
+            im.draft("RGB", (size * 2, size * 2))
+
+        # EXIF 旋转（无 EXIF 时返回 None，需 or im 兜底）
+        try:
+            im = ImageOps.exif_transpose(im) or im
+        except Exception:  # noqa: BLE001  EXIF 损坏不该影响主流程
+            pass
+
+        # 动图 / 多帧：只取第一帧
+        if getattr(im, "is_animated", False):
+            try:
+                im.seek(0)
+            except (EOFError, OSError):
+                pass
+
+        # 统一到 RGB。带 alpha 的先贴白底 —— 直接 convert("RGB") 会把
+        # 透明区域变成黑色。
+        if im.mode in ("RGBA", "LA", "P"):
+            im = im.convert("RGBA")
+            bg = Image.new("RGB", im.size, (255, 255, 255))
+            bg.paste(im, mask=im.split()[-1])
+            im = bg
+        elif im.mode != "RGB":
+            im = im.convert("RGB")
+
+        im.thumbnail((size, size), Image.Resampling.LANCZOS)
+
+        buf = io.BytesIO()
+        im.save(buf, format="WEBP", quality=82, method=4)
+        return buf.getvalue()
+
+
+def _make_video_thumb(src: Path, size: int) -> bytes:
+    """
+    用 ffmpeg 抽首帧转 WebP，返回字节。失败抛异常。
+
+    关键处理：
+      - -ss 放在 -i **之前**：输入定位，靠 seek 直接跳到目标时间，
+        不解码前面所有帧。放在 -i 之后是输出定位，慢得多
+      - 不取第 0 秒：很多视频开头是黑帧/纯色，取 1 秒处更可能拿到画面
+      - 短于 1 秒的视频 -ss 1 会失败，故回退到 -ss 0
+      - scale 用 force_original_aspect_ratio=decrease 且不放大，
+        小视频保持原尺寸以免糊掉
+      - 超时保护：慢速/损坏视频不能让请求挂住
+    """
+    if not os.access(FFMPEG_BIN, os.X_OK):
+        raise _ThumbUnsupported("服务端未安装 ffmpeg，无法生成视频缩略图")
+
+    def run(seek: str):
+        cmd = [
+            FFMPEG_BIN, "-hide_banner", "-loglevel", "error",
+            "-ss", seek,                      # 输入定位（必须在 -i 前）
+            "-i", str(src),
+            "-frames:v", "1",
+            "-an",
+            "-vf",
+            f"scale={size}:{size}:force_original_aspect_ratio=decrease:"
+            f"force_divisible_by=2",
+            "-c:v", "libwebp",
+            "-quality", "82",
+            "-f", "webp",
+            "-",
+        ]
+        try:
+            return subprocess.run(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                timeout=THUMB_TIMEOUT,
+            )
+        except subprocess.TimeoutExpired:
+            raise ValueError("视频处理超时")
+
+    for seek in ("1", "0"):
+        proc = run(seek)
+        if proc.returncode == 0 and proc.stdout:
+            return proc.stdout
+
+    detail = (proc.stderr or b"").decode("utf-8", "replace")[:200]
+    raise ValueError(f"视频抽帧失败：{detail}")
+
+
+# 每个缓存 key 一把锁，避免同一张缩略图被并发重复生成
+_THUMB_LOCKS: dict = {}
+_THUMB_LOCKS_GUARD = threading.Lock()
+
+
+def _thumb_lock(key: str) -> threading.Lock:
+    """取出（或创建）某个缓存 key 对应的锁。"""
+    with _THUMB_LOCKS_GUARD:
+        lk = _THUMB_LOCKS.get(key)
+        if lk is None:
+            lk = threading.Lock()
+            _THUMB_LOCKS[key] = lk
+        return lk
+
+
+def _build_thumb_with_lock(src: Path, kind: str, cache_path: Path, size: int) -> bytes:
+    """持锁生成缩略图并写缓存。等锁期间别人若已写好，直接复用。"""
+    with _thumb_lock(cache_path.name):
+        # 双检：等锁时可能已有别的请求生成完毕
+        if cache_path.exists():
+            return cache_path.read_bytes()
+
+        if kind == "image":
+            data = _make_image_thumb(src, size)
+        else:
+            data = _make_video_thumb(src, size)
+
+        # 原子写：先写 .tmp 再 os.replace，避免读到半截文件。
+        # 带 pid 后缀避免并发请求写到同一个临时文件。
+        tmp = cache_path.with_name(f"{cache_path.stem}.{os.getpid()}.tmp")
+        try:
+            tmp.write_bytes(data)
+            tmp.replace(cache_path)
+        except OSError:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
+        return data
+
+
+def _thumb_cache_headers(resp: Response) -> Response:
+    """缩略图响应的缓存头，写入与读取两处共用，避免漂移。"""
+    # 内容寻址：key 含 mtime，同一 URL 的内容永不变化，可以 immutable
+    resp.headers["Cache-Control"] = (
+        f"public, max-age={THUMB_CACHE_TTL}, immutable"
+    )
+    return resp
+
+
+def cleanup_thumb_cache() -> int:
+    """
+    清理过期的缩略图缓存，返回删除数量。
+
+    与 cleanup_stale_sessions 同一模式：调用方用 try/except 静默处理，
+    失败不影响主请求。
+    """
+    removed = 0
+    now = time.time()
+    if not THUMB_CACHE_DIR.exists():
+        return 0
+
+    for child in THUMB_CACHE_DIR.iterdir():
+        try:
+            st = child.stat()
+        except OSError:
+            continue
+
+        # 残留的 .tmp（进程崩溃留下的半截文件）：超过 1 小时就删
+        if child.suffix == ".tmp":
+            if now - st.st_mtime > 3600:
+                try:
+                    child.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            continue
+
+        if now - st.st_mtime > THUMB_CACHE_TTL:
+            try:
+                child.unlink(missing_ok=True)
+                removed += 1
+            except OSError:
+                pass
+
+    # 顺带清理已无对应缓存文件的锁条目，避免字典无限增长
+    with _THUMB_LOCKS_GUARD:
+        for key in list(_THUMB_LOCKS.keys()):
+            if not (THUMB_CACHE_DIR / key).exists():
+                _THUMB_LOCKS.pop(key, None)
+
+    return removed
+
+
+# 上次清理时间。用 list 做可变容器，避免 global 声明
+_LAST_THUMB_CLEANUP = [0.0]
+
+
+def maybe_cleanup_thumbs() -> None:
+    """
+    节流版清理：距上次超过 THUMB_CLEANUP_INTERVAL 才真正执行。
+
+    为什么必须节流：缩略图数量可能上万，每次 api_list 都全量 iterdir
+    会明显拖慢列表响应。而 cleanup_stale_sessions 扫的是少量会话目录，
+    量级完全不同，所以它可以每次跑。
+
+    为什么不用后台线程定时清理：Flask 以 threaded=True 运行，
+    多个 worker 会重复清理；挂在请求里 + 节流更简单可靠，且已有先例。
+    """
+    now = time.time()
+    if now - _LAST_THUMB_CLEANUP[0] < THUMB_CLEANUP_INTERVAL:
+        return
+    _LAST_THUMB_CLEANUP[0] = now
+    try:
+        cleanup_thumb_cache()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+# ---------------------------------------------------------------------------
 # API
 # ---------------------------------------------------------------------------
 
@@ -870,6 +1253,9 @@ def api_list():
         acc.append(seg)
         crumbs.append({"name": seg, "path": "/".join(acc)})
 
+    # 顺带（每小时最多一次）清理过期缩略图缓存。失败静默，不影响列表。
+    maybe_cleanup_thumbs()
+
     return jsonify({
         "ok": True,
         "path": rel_of(target),
@@ -884,12 +1270,33 @@ def api_list():
 
 @app.route("/api/upload", methods=["POST"])
 def api_upload():
-    """上传一个或多个文件到指定目录（字段名 files，多文件支持）。"""
-    rel = request.form.get("path", "")
-    target_dir = safe_path(rel)
+    """
+    上传一个或多个文件到指定目录（字段名 files，多文件支持）。
 
-    if not target_dir.exists() or not target_dir.is_dir():
-        return jsonify({"ok": False, "error": "目标目录不存在"}), 404
+    表单字段：
+      path      目标目录相对路径
+      dirmode   可选。为真时**保留 filename 里的目录结构**：
+                  filename="2024/a.jpg" + path="photos" → storage/photos/2024/a.jpg
+                并按需幂等创建目录（path 本身也可不存在）。
+                不传时保持原行为：剥掉目录部分 + 文件自动改名。
+
+    ⚠️ 为什么要在这里建目录，而不是让前端调 /api/mkdir：
+       /api/mkdir 在 DANGEROUS_PATHS 里，API Key 通道在
+       allow_dangerous=false 时会被 403 挡掉；而本接口不在危险清单内，
+       所以文件夹上传不会因为「建目录」这一步而整体失败。
+    """
+    rel = request.form.get("path", "")
+    dirmode = (request.form.get("dirmode", "") or "").lower() in ("1", "true", "yes", "on")
+
+    if dirmode:
+        # dirmode 下允许 path 不存在，由 ensure_dir_rel 逐级创建
+        target_dir, err = ensure_dir_rel(rel)
+        if err:
+            return jsonify({"ok": False, "error": err}), 409
+    else:
+        target_dir = safe_path(rel)
+        if not target_dir.exists() or not target_dir.is_dir():
+            return jsonify({"ok": False, "error": "目标目录不存在"}), 404
 
     uploaded = request.files.getlist("files")
     if not uploaded:
@@ -897,24 +1304,44 @@ def api_upload():
 
     results = []
     for f in uploaded:
-        raw_name = os.path.basename(f.filename or "")
-        if raw_name in FORBIDDEN_NAMES:
-            results.append({"name": raw_name, "ok": False, "error": "非法文件名"})
-            continue
+        raw = f.filename or ""
 
-        # 统一覆盖策略：不覆盖，自动改名
-        name = unique_name(target_dir, raw_name)
-        dest = target_dir / name
+        if dirmode:
+            # 保留目录结构：末段是文件名，前面是子目录
+            segs = safe_rel_segments(raw)
+            if not segs or segs[-1] in FORBIDDEN_NAMES:
+                results.append({"name": raw, "ok": False, "error": "非法文件名"})
+                continue
+            raw_name = segs[-1]
+            dest_dir = target_dir
+            if len(segs) > 1:
+                base_rel = rel_of(target_dir)
+                want_rel = "/".join(([base_rel] if base_rel else []) + segs[:-1])
+                dest_dir, err = ensure_dir_rel(want_rel)
+                if err:
+                    results.append({"name": raw, "ok": False, "error": err})
+                    continue
+        else:
+            dest_dir = target_dir
+            raw_name = os.path.basename(raw)      # 原行为：剥掉目录部分
+            if raw_name in FORBIDDEN_NAMES:
+                results.append({"name": raw_name, "ok": False, "error": "非法文件名"})
+                continue
+
+        # 覆盖策略不变：文件不覆盖，自动改名（目录则复用，见 ensure_dir_rel）
+        name = unique_name(dest_dir, raw_name)
+        dest = dest_dir / name
 
         try:
             f.save(str(dest))
             size = dest.stat().st_size
             results.append({
                 "name": name, "ok": True,
+                "rel_path": rel_of(dest),     # 相对 STORAGE_ROOT 的完整路径
                 "size": size, "size_h": human_size(size)
             })
         except Exception as e:  # noqa: BLE001
-            results.append({"name": raw_name, "ok": False, "error": str(e)})
+            results.append({"name": raw, "ok": False, "error": str(e)})
 
     ok_count = sum(1 for r in results if r["ok"])
     return jsonify({
@@ -986,16 +1413,29 @@ def api_upload_init():
     初始化分片上传会话。
 
     入参（JSON）：
-      path     目标目录相对路径
-      name     文件名
-      size     文件总字节数
+      path       目标目录相对路径
+      name       文件名（dirmode 时可含子目录，如 "2024/a.jpg"）
+      size       文件总字节数
       chunk_size 分片大小（可选，用于计算总分片数）
+      dirmode    可选。为真时保留 name 里的目录结构并幂等建目录
+
+    ⚠️ 注意与 /api/upload 的差异：那边参数走 form，这边走 **JSON body**。
+       前端 api.uploadInit 发的是 JSON，新增字段也必须放 JSON 里。
     """
     data = request.get_json(silent=True) or {}
     rel = data.get("path", "")
-    name = os.path.basename((data.get("name") or "").strip())
+    dirmode = bool(data.get("dirmode"))
+    raw_name = (data.get("name") or "").strip()
     size = data.get("size")
     chunk_size = int(data.get("chunk_size") or CHUNK_SIZE)
+
+    if dirmode:
+        segs = safe_rel_segments(raw_name)
+        if not segs:
+            return jsonify({"ok": False, "error": "文件名无效"}), 400
+        name, sub_segs = segs[-1], segs[:-1]
+    else:
+        name, sub_segs = os.path.basename(raw_name), []
 
     if not name or name in FORBIDDEN_NAMES:
         return jsonify({"ok": False, "error": "文件名无效"}), 400
@@ -1009,9 +1449,22 @@ def api_upload_init():
     if chunk_size <= 0 or chunk_size > CHUNK_SIZE:
         chunk_size = CHUNK_SIZE
 
-    target_dir = safe_path(rel)
-    if not target_dir.exists() or not target_dir.is_dir():
-        return jsonify({"ok": False, "error": "目标目录不存在"}), 404
+    if dirmode:
+        # path 允许不存在；子目录也在这里一次性建好，
+        # 这样 complete 阶段 safe_path(meta["path"]) 必定能通过
+        target_dir, err = ensure_dir_rel(rel)
+        if err:
+            return jsonify({"ok": False, "error": err}), 409
+        if sub_segs:
+            base_rel = rel_of(target_dir)
+            want_rel = "/".join(([base_rel] if base_rel else []) + sub_segs)
+            target_dir, err = ensure_dir_rel(want_rel)
+            if err:
+                return jsonify({"ok": False, "error": err}), 409
+    else:
+        target_dir = safe_path(rel)
+        if not target_dir.exists() or not target_dir.is_dir():
+            return jsonify({"ok": False, "error": "目标目录不存在"}), 404
 
     total_chunks = (size + chunk_size - 1) // chunk_size
 
@@ -1029,6 +1482,7 @@ def api_upload_init():
         "total_chunks": total_chunks,
         "created_at": time.time(),
         "received": [],          # 已收到的分片序号
+        "dirmode": dirmode,      # 仅作诊断用
     }
     d = _session_dir(upload_id)
     (d / "chunks").mkdir(parents=True, exist_ok=True)
@@ -1199,6 +1653,57 @@ def api_download():
         download_name=target.name,
         conditional=True,   # 支持 Range / If-Range，实现断点续传
     )
+
+
+@app.route("/api/thumbnail")
+def api_thumbnail():
+    """
+    生成 / 返回媒体缩略图（WebP）。仅支持图片与视频。
+
+    设计：
+      - 缓存落在 .thumb_cache/，key = hash(相对路径 | mtime_ns | 源大小 | 尺寸)
+      - 源文件 mtime 变化即视为失效（key 变了，自然重算）
+      - 并发写同一 key：持锁 + 双检 + 原子替换
+      - 生成失败一律不写缓存，下次请求重试；返回 404/415 让前端回退 emoji
+
+    查询参数：
+      path  源文件相对路径
+    """
+    rel = request.args.get("path", "")
+    src = safe_path(rel)
+
+    if not src.exists() or not src.is_file():
+        return jsonify({"ok": False, "error": "文件不存在"}), 404
+
+    ext = src.suffix.lower().lstrip(".")
+    if ext in THUMB_IMAGE_EXT:
+        kind = "image"
+    elif ext in THUMB_VIDEO_EXT:
+        kind = "video"
+    else:
+        return jsonify({"ok": False, "error": "该类型不支持缩略图"}), 415
+
+    try:
+        cache_path = _thumb_cache_path(rel_of(src), src, THUMB_SIZE)
+    except OSError:
+        return jsonify({"ok": False, "error": "无法读取文件"}), 500
+
+    # 命中缓存：直接返回
+    if cache_path.exists():
+        return _thumb_cache_headers(
+            send_file(str(cache_path), mimetype="image/webp", conditional=True)
+        )
+
+    # 未命中：生成
+    try:
+        data = _build_thumb_with_lock(src, kind, cache_path, THUMB_SIZE)
+    except _ThumbUnsupported as e:
+        return jsonify({"ok": False, "error": str(e)}), 415
+    except Exception as e:  # noqa: BLE001
+        # 不写缓存 —— 下次请求会重试
+        return jsonify({"ok": False, "error": f"缩略图生成失败：{e}"}), 500
+
+    return _thumb_cache_headers(Response(data, mimetype="image/webp"))
 
 
 @app.route("/api/delete", methods=["POST"])

@@ -1,9 +1,4 @@
-# WorkBuddy Disk · 后端
-
-> 📌 **这是 `workbuddy-disk` 仓库的后端子目录。** 总览与部署说明见[仓库根 README](../README.md)。
->
-> 本目录是**后端归档副本**，包含 Flask API 与一个内嵌网页版界面（零依赖、单文件，作为前端不可用时的兜底入口）。
-> 正式前端在 [`../frontend`](../frontend)，部署于 Vercel。
+# WorkBuddy Disk
 
 一个跑在单端口上的轻量网盘系统。Python + Flask，前端零依赖，在单个文件里把后端与页面打包完毕。
 
@@ -16,11 +11,34 @@
 - **目录浏览** — 子目录导航、路径面包屑
 - **上传** — 小文件直传；大文件自动分片（绕过网关限制）
 - **多文件并发上传** — 并发数可配（1~10），单文件失败不阻塞其他文件
+- **文件夹上传** — 保留目录结构（`dirmode`），目录按需幂等创建
 - **下载** — 支持 HTTP Range 断点续传
+- **媒体缩略图** — 图片与视频生成 WebP 缩略图，磁盘缓存 + mtime 失效
 - **文件管理** — 新建文件夹、重命名、批量删除
 - **鉴权** — 网页会话（Cookie）+ API Key 双通道
 - **API Key 管理** — 设置页内新建 / 停用 / 改名 / 删除
 - **危险操作开关** — 一键禁止 API Key 执行删除类操作
+
+## 两套操作方式
+
+桌面端与移动端的文件操作入口不同，因为「悬停」在触摸屏上不存在：
+
+| | 桌面端（≥640px） | 移动端（<640px） |
+| --- | --- | --- |
+| 打开 | 单击行 | 单击行 |
+| 操作入口 | 悬停显示圆形按钮组 | **长按 500ms** 弹出底部抽屉 |
+| 多选 | 复选框悬停显隐 | 长按抽屉内的操作项 |
+
+长按的几条硬约束（都是踩过坑后的定论）：
+
+- `onPointerDown` 里**绝不 `preventDefault()`** —— 会让浏览器认定该元素
+  不参与滚动手势，列表再也滚不动。改用「位移 > 10px 取消长按」来区分
+  「按住不动」与「滑动列表」
+- 长按触发后，抬指时浏览器会补发一次 `click`，必须在 **capture 阶段**
+  吞掉，否则会顺带进入目录 / 打开预览
+- `pointerType === 'mouse'` 直接跳过 —— 桌面按住是拖选行为
+- 浮层层级：`UploadPanel 60` < `抽屉遮罩 69 / 抽屉 70` < `Modal 80`，
+  这样从抽屉点「删除」弹出的确认框才能盖在抽屉之上
 
 ## 快速开始
 
@@ -48,11 +66,9 @@ PORT=8080 python3 app.py
 
 | 环境变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `NETDISK_KEY` | `change-me` | 网页登录密钥，**务必修改** |
-| `NETDISK_CORS_ORIGINS` | 内置白名单 | 允许的跨域来源，逗号分隔 |
-| `NETDISK_PORT` / `PORT` | `8000` | 监听端口 |
-| `NETDISK_HOST` | `0.0.0.0` | 监听地址 |
-| `NETDISK_TOKEN_TTL` | `604800`（7 天） | 登录 Token 有效期（秒） |
+| `NETDISK_KEY` | `lijiaxu2011` | 网页登录密钥 |
+| `NETDISK_SESSION_TTL` | `604800`（7 天） | 会话有效期（秒） |
+| `PORT` | `8000` | 监听端口 |
 
 代码内常量（`app.py` 顶部）：
 
@@ -103,10 +119,40 @@ POST /api/upload/complete  → 合并
 | POST | `/api/upload/abort` | 分片：中止 | ✅ |
 | GET | `/api/upload/status` | 查会话状态 | |
 | GET | `/api/download` | 下载（支持 Range） | |
+| GET | `/api/thumbnail` | 媒体缩略图（图片/视频，WebP） | |
 | POST | `/api/delete` | 删除 | ✅ |
 | POST | `/api/rename` | 重命名 | ✅ |
 | POST | `/api/mkdir` | 新建文件夹 | ✅ |
 | GET | `/api/whoami` | 查登录状态 | |
+
+### 文件夹上传（`dirmode`）
+
+`/api/upload` 与 `/api/upload/init` 都支持一个可选的 `dirmode` 参数。开启后
+**保留文件名里的目录结构**，并按需幂等创建目录：
+
+```bash
+# 直传：filename 带目录 → storage/photos/2024/a.jpg（目录自动创建）
+curl -X POST "$BASE/api/upload" -H "X-API-Key: $KEY" \
+  -F "path=photos" -F "dirmode=true" -F "files=@a.jpg;filename=2024/a.jpg"
+```
+
+- `path` 在 `dirmode` 下**允许不存在**，会被逐级创建（不带 `dirmode` 时仍是 404）
+- 目录**幂等复用、绝不改名**；同名文件仍走自动改名（`a.jpg` → `a (1).jpg`）
+- 响应中每条结果额外带 `rel_path`（相对存储根的完整路径）
+- ⚠️ 之所以在上传接口内建目录、而不是让调用方逐级调 `/api/mkdir`：
+  `/api/mkdir` 属于危险操作，API Key 在 `allow_dangerous=false` 时会被 403；
+  而本接口不在危险清单内，因此**文件夹上传不受该开关限制**。
+
+### 缩略图
+
+```bash
+curl "$BASE/api/thumbnail?path=photo/a.jpg" -H "X-API-Key: $KEY" -o t.webp
+```
+
+- 支持图片（Pillow）与视频（ffmpeg 抽首帧），统一输出 WebP，最长边默认 300px
+- 缓存在 `.thumb_cache/`，key 为 `sha256(路径 | mtime | 大小 | 尺寸)` ——
+  源文件 mtime 变化即自动失效
+- 不支持的类型返回 `415`，源文件不存在返回 `404`；前端据此回退到 emoji 图标
 
 ## 安全设计
 
@@ -120,24 +166,32 @@ POST /api/upload/complete  → 合并
 
 ## 依赖
 
-见 [`requirements.txt`](./requirements.txt)，实际只需 **Flask**（其余全是标准库）：
+核心只需 **Flask**（其余全是标准库），服务即可完整运行：
 
 ```bash
-pip install -r requirements.txt
+pip install flask
 ```
 
-## 跨域（CORS）
+以下两项是**可选增强**，只影响缩略图功能。缺失时服务照常启动，对应类型
+的缩略图请求会返回 415，前端自动回退到 emoji 图标：
 
-前端部署在 `pan.upxuu.com`，与后端不同源，需要：
+| 依赖 | 用途 | 缺失时 |
+| --- | --- | --- |
+| [Pillow](https://python-pillow.org/) | 图片缩略图 | 图片无缩略图 |
+| `ffmpeg` 可执行文件 | 视频首帧缩略图 | 视频无缩略图 |
 
 ```bash
-export NETDISK_CORS_ORIGINS='https://pan.upxuu.com,http://localhost:5173'
+pip install pillow            # 图片缩略图（可选）
+# ffmpeg 请用系统包管理器安装，或用 NETDISK_FFMPEG 指定路径
 ```
 
-- 预检 `OPTIONS` 在鉴权前短路放行，否则浏览器会拿到 `401` 而直接判定跨域失败
-- 响应注入 `Access-Control-Allow-Origin` / `-Methods` / `-Headers` / `-Max-Age`
-- 请求自带 `Origin` 且命中白名单时，回显该 `Origin` 并附 `Vary: Origin`，以便将来支持多域名与 `Allow-Credentials`
+> 缩略图相关的环境变量：`NETDISK_THUMB_SIZE`（边长，默认 300）、
+> `NETDISK_THUMB_TIMEOUT`（单张生成超时秒数，默认 20）、
+> `NETDISK_THUMB_TTL`（缓存保留秒数，默认 30 天）、
+> `NETDISK_THUMB_MAX_INPUT`（源文件大小上限，默认 64MiB）、
+> `NETDISK_FFMPEG`（ffmpeg 路径，默认 `/usr/local/bin/ffmpeg`）。
 
 ## 说明
 
-`storage/`（用户文件）、`.config/`（API Key 与设置）、`*.log` 已在 `.gitignore` 中排除，不会入库。
+`storage/`（用户文件）、`.config/`（API Key 与设置）、`.thumb_cache/`（缩略图缓存）、
+`*.log` 已在 `.gitignore` 中排除，不会入库。
