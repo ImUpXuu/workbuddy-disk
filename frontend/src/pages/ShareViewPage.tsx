@@ -2,8 +2,8 @@
  * 公开分享查看页（免登录）。
  *
  * 凭链接里的 token 直接访问：
- *   - 目录分享：浏览整个子树，点文件夹下钻，点文件下载
- *   - 文件分享：展示该文件，可直接下载 / 预览（图片、视频）
+ *   - 目录分享：浏览整个子树，点文件夹下钻，点文件预览（图片/视频内联），下载走显式按钮
+ *   - 文件分享：展示该文件，可直接预览 / 下载（图片、视频内联）
  *
  * 不依赖登录态，任何人拿到链接都能打开。
  */
@@ -36,6 +36,7 @@ export default function ShareViewPage() {
   const [data, setData] = useState<PublicShareResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [preview, setPreview] = useState<Entry | null>(null)
 
   // 跟随 hash 变化（分享内下钻 / 浏览器前进后退）
   useHashRoute((r) => {
@@ -123,9 +124,21 @@ export default function ShareViewPage() {
             <ShareBody
               data={data}
               onOpenDir={(p) => shareNavigate(token, p)}
+              onPreview={setPreview}
               onDownload={downloadFile}
             />
           )
+        )}
+        {preview && (
+          <SharePreview
+            entry={preview}
+            token={token}
+            onClose={() => setPreview(null)}
+            onDownload={(e) => {
+              setPreview(null)
+              void downloadFile(e)
+            }}
+          />
         )}
       </main>
     </div>
@@ -135,10 +148,12 @@ export default function ShareViewPage() {
 function ShareBody({
   data,
   onOpenDir,
+  onPreview,
   onDownload,
 }: {
   data: PublicShareResponse
   onOpenDir: (relPath: string) => void
+  onPreview: (entry: Entry) => void
   onDownload: (entry: Entry) => void
 }) {
   // 文件分享：展示单个文件 + 预览 / 下载
@@ -246,6 +261,7 @@ function ShareBody({
               entry={entry}
               token={data.token}
               onOpenDir={onOpenDir}
+              onPreview={onPreview}
               onDownload={onDownload}
             />
           ))}
@@ -259,11 +275,13 @@ function ShareItem({
   entry,
   token,
   onOpenDir,
+  onPreview,
   onDownload,
 }: {
   entry: Entry
   token: string
   onOpenDir: (relPath: string) => void
+  onPreview: (entry: Entry) => void
   onDownload: (entry: Entry) => void
 }) {
   const kind = kindOf(entry.name, entry.is_dir)
@@ -281,7 +299,7 @@ function ShareItem({
 
       <button
         type="button"
-        onClick={() => (entry.is_dir ? onOpenDir(entry.path) : void onDownload(entry))}
+        onClick={() => (entry.is_dir ? onOpenDir(entry.path) : onPreview(entry))}
         className="min-w-0 flex-1 text-left"
       >
         <p className="truncate-1 text-sm font-bold text-[--color-ink]">{entry.name}</p>
@@ -308,4 +326,81 @@ function ShareItem({
 
 function hasThumb(kind: string): boolean {
   return kind === 'image' || kind === 'video'
+}
+
+/**
+ * 分享内的文件预览弹层。
+ *
+ * 点文件名不再直接下载，而是先在这里预览：
+ *   - 图片 / 视频：浏览器内联展示
+ *   - 其他类型：提示暂不支持在线预览，并提供下载入口
+ * 真正的下载交给显式的「下载文件」按钮，避免「一进分享页就全下下来」。
+ */
+function SharePreview({
+  entry,
+  token,
+  onClose,
+  onDownload,
+}: {
+  entry: Entry
+  token: string
+  onClose: () => void
+  onDownload: (entry: Entry) => void
+}) {
+  const kind = kindOf(entry.name, false)
+  const src = api.shareDownloadUrl(token, entry.path)
+
+  return (
+    <div
+      className="fixed inset-0 z-[80] flex items-end justify-center bg-black/60 p-3 backdrop-blur-sm sm:items-center"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onClose()
+      }}
+    >
+      <div className="cute-border w-full max-w-2xl rounded-2xl bg-white p-4 shadow-2xl">
+        <div className="mb-3 flex items-center gap-3">
+          <div className="min-w-0 flex-1">
+            <p className="truncate-1 text-sm font-black text-slate-800">{entry.name}</p>
+            <p className="mt-0.5 text-[11px] font-medium text-[--color-ink-faint]">
+              {humanSize(entry.size)} · {humanDate(entry.mtime)}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="ml-auto grid size-8 shrink-0 place-items-center rounded-full text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+            aria-label="关闭"
+          >
+            <Icon d={ICONS.close} className="size-4" />
+          </button>
+        </div>
+
+        <div className="overflow-hidden rounded-xl bg-slate-50">
+          {kind === 'image' ? (
+            <img src={src} alt={entry.name} className="max-h-[60vh] w-full bg-[#0b0b0c] object-contain" />
+          ) : kind === 'video' ? (
+            <video src={src} controls className="max-h-[60vh] w-full bg-black" />
+          ) : (
+            <div className="grid place-items-center p-10 text-center">
+              <div className="mb-2 text-4xl opacity-50">{KIND_GLYPH[kind] ?? KIND_GLYPH.file}</div>
+              <p className="text-sm font-bold text-slate-500">该类型暂不支持在线预览</p>
+              <p className="mt-1 text-xs font-medium text-slate-400">点「下载文件」保存到本地</p>
+            </div>
+          )}
+        </div>
+
+        <div className="mt-3 flex gap-2">
+          <Button
+            variant="primary"
+            className="flex-1"
+            onClick={() => void onDownload(entry)}
+            icon={<Icon d={ICONS.download} className="size-3.5" />}
+          >
+            下载文件
+          </Button>
+          <Button onClick={onClose}>关闭</Button>
+        </div>
+      </div>
+    </div>
+  )
 }
