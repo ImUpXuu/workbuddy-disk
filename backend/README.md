@@ -112,6 +112,12 @@ POST /api/upload/complete  → 合并
 | GET/POST | `/api/settings` | 读写设置 | |
 | GET/POST | `/api/apikeys` | 列出 / 新建 Key | |
 | PATCH/DELETE | `/api/apikeys/<id>` | 启停改名 / 删除 | |
+| GET | `/api/shares` | 列出全部分享（管理，需鉴权） | |
+| POST | `/api/shares` | 新建分享（body: `path` / `expires_days`） | |
+| PATCH/DELETE | `/api/shares/<id>` | 启停 / 改有效期 / 撤销 | |
+| GET | `/api/share/<token>` | 公开查看分享内容（免登录） | |
+| GET | `/api/share/<token>/download` | 公开下载分享内文件（免登录） | |
+| GET | `/api/share/<token>/thumbnail` | 公开缩略图（免登录） | |
 | POST | `/api/upload` | 小文件直传 | |
 | POST | `/api/upload/init` | 分片：建会话 | |
 | POST | `/api/upload/chunk` | 分片：传一片 | |
@@ -153,6 +159,31 @@ curl "$BASE/api/thumbnail?path=photo/a.jpg" -H "X-API-Key: $KEY" -o t.webp
 - 缓存在 `.thumb_cache/`，key 为 `sha256(路径 | mtime | 大小 | 尺寸)` ——
   源文件 mtime 变化即自动失效
 - 不支持的类型返回 `415`，源文件不存在返回 `404`；前端据此回退到 emoji 图标
+
+## 分享链接
+
+把任意目录或文件变成一条**免登录**即可打开的公开链接：
+
+```bash
+# 分享某个目录（返回 token 与公开链接 /#/s/<token>）
+curl -X POST "$BASE/api/shares" -H "X-API-Key: $KEY" \
+  -H "Content-Type: application/json" -d '{"path":"photos/2024","expires_days":0}'
+
+# 任何人拿链接都能直接看（无需任何凭证）
+curl "$BASE/api/share/<token>"
+curl "$BASE/api/share/<token>/download?path=photos/2024/a.jpg"
+```
+
+- 目录分享覆盖整个子树；文件分享只暴露那一个文件。
+- 链接即凭证：`token` 是 URL 里唯一的保密要素，泄露等同于内容泄露，
+  因此服务端**明文存储**（与 API Key 的哈希存储不同）。
+- 有效期 `expires_days`：`0` 表示永不过期；过期 / 被停用 / 被撤销都立即 404。
+- 范围校验：下载与缩略图都过 `share_allows()`，越权访问分享外的路径直接拒绝。
+- 前端用 **hash 路由**（如 `#/d/photos/2024`、`#/s/<token>`），
+  服务端永远只服务 `/`，分享链接 / 目录链接在任意托管方式下都能直接打开。
+
+> ⚠️ 分享链接是公开入口，发给别人即代表授权其访问对应内容；
+> 不再需要时请到「分享管理」页撤销。
 
 ## 安全设计
 

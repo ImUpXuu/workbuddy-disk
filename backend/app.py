@@ -477,6 +477,117 @@ def _fmt_ts(ts) -> str:
     return time.strftime("%Y-%m-%d %H:%M", time.localtime(ts))
 
 
+# ---------------------------------------------------------------------------
+# 分享链接存储层
+# ---------------------------------------------------------------------------
+#
+# 设计说明：
+#   - 记录落在 .config/shares.json，权限 600，与 API Key 同目录。
+#   - token 是 URL 的唯一保密要素，secrets.token_urlsafe(24) ≈ 192bit 熵，
+#     可枚举性为零。链接即凭证，**明文存储**（这正是「凭链接访问」的语义，
+#     与 API Key 的哈希存储不同 —— Key 防的是库泄露后被拿来调接口，
+#     而分享链接泄露与文件泄露等价，哈希没有意义）。
+#   - 目录分享允许访问其整个子树；文件分享只允许访问那一个文件。
+#     两类都用「resolve 后前缀/相等校验」把关，见 share_allows()。
+#   - enabled=False 与 expires_at 过期都视为失效，公开入口返回 404
+#     （不区分「不存在」与「被停用」，避免给枚举者额外信息）。
+
+SHARES_FILE = CONFIG_DIR / "shares.json"
+_SHARES_LOCK = threading.Lock()
+
+
+def load_shares() -> list:
+    with _SHARES_LOCK:
+        data = _json_read(SHARES_FILE, [])
+    return data if isinstance(data, list) else []
+
+
+def _save_shares(items: list) -> None:
+    with _SHARES_LOCK:
+        _json_write(SHARES_FILE, items)
+
+
+def _share_is_active(rec: dict, now: int = 0) -> bool:
+    """启用中且未过期。now=0 时取当前时间（写成参数方便测试）。"""
+    if not now:
+        now = int(time.time())
+    if not rec.get("enabled", True):
+        return False
+    exp = int(rec.get("expires_at", 0) or 0)
+    if exp and exp < now:
+        return False
+    return True
+
+
+def find_share(token: str) -> dict | None:
+    """按 token 找**有效**分享；无效/停用/过期一律返回 None。"""
+    token = (token or "").strip()
+    if not token:
+        return None
+    for rec in load_shares():
+        if hmac.compare_digest(str(rec.get("token", "")), token) and _share_is_active(rec):
+            return rec
+    return None
+
+
+def share_allows(rec: dict, abs_target: Path) -> bool:
+    """该分享是否覆盖目标路径。目录分享覆盖整个子树，文件分享只覆盖自身。"""
+    try:
+        base = safe_path(rec.get("path", ""))
+    except Exception:  # noqa: BLE001
+        return False
+    if rec.get("is_dir"):
+        return abs_target == base or base in abs_target.parents
+    return abs_target == base
+
+
+def public_share_view(rec: dict) -> dict:
+    """管理接口返回的分享视图（含 token —— 管理端本就该能看到完整链接）。"""
+    now = int(time.time())
+    exp = int(rec.get("expires_at", 0) or 0)
+    active = _share_is_active(rec, now)
+    return {
+        "id": rec.get("id"),
+        "token": rec.get("token"),
+        # 链接走 hash 路由：服务端永远只服务 "/"（index.html），
+        # 目录切换全在客户端，任何托管方式都能直接打开。
+        "url": f"/#/s/{rec.get('token')}",
+        "path": rec.get("path"),
+        "is_dir": bool(rec.get("is_dir")),
+        "enabled": bool(rec.get("enabled", True)),
+        "created_at": rec.get("created_at", 0),
+        "created_h": _fmt_ts(rec.get("created_at", 0)),
+        "expires_at": exp,
+        "expires_h": "永不过期" if not exp else _fmt_ts(exp),
+        "expired": bool(exp and exp < now),
+        "active": active,
+    }
+
+
+def create_share(rel: str, expires_days: int = 0) -> dict:
+    """新建分享，返回完整记录。rel 必须指向已存在的文件或目录。"""
+    target = safe_path(rel)
+    if target == STORAGE_ROOT:
+        raise ValueError("不能分享根目录")
+    if not target.exists():
+        raise FileNotFoundError("目标不存在")
+
+    now = int(time.time())
+    days = max(0, int(expires_days or 0))
+    rec = {
+        "id": _rand_id(12),
+        "token": secrets.token_urlsafe(24),
+        "path": rel_of(target),
+        "is_dir": target.is_dir(),
+        "enabled": True,
+        "created_at": now,
+        "expires_at": now + days * 86400 if days else 0,
+    }
+    items = load_shares()
+    items.append(rec)
+    _save_shares(items)
+    return rec
+
 
 # ---------------------------------------------------------------------------
 # 路径安全工具
@@ -893,6 +1004,11 @@ def _auth_guard():
     if path in PUBLIC_PATHS or path.startswith("/static/"):
         return None
 
+    # 公开分享接口：凭链接里的 token 访问，免登录。
+    # 注意用带斜杠的前缀，这样复数形的管理接口 /api/shares 不会被误放行。
+    if path.startswith("/api/share/"):
+        return None
+
     # 1) API Key 通道（程序调用）
     ak = extract_apikey()
     if ak:
@@ -1218,6 +1334,50 @@ def maybe_cleanup_thumbs() -> None:
         cleanup_thumb_cache()
     except Exception:  # noqa: BLE001
         pass
+
+
+def _serve_thumbnail(src: Path) -> Response:
+    """
+    给定已解析、且位于 STORAGE_ROOT 内的源文件，生成 / 返回 WebP 缩略图。
+
+    抽成独立函数是为了让「带鉴权的 /api/thumbnail」与「公开分享的
+    /api/share/<token>/thumbnail」复用同一套生成 + 缓存逻辑，
+    避免两份缩略图实现各自漂移。
+
+    返回 Flask 响应（send_file / Response / 带状态码的 jsonify 元组）。
+    """
+    if not src.exists() or not src.is_file():
+        return jsonify({"ok": False, "error": "文件不存在"}), 404
+
+    ext = src.suffix.lower().lstrip(".")
+    if ext in THUMB_IMAGE_EXT:
+        kind = "image"
+    elif ext in THUMB_VIDEO_EXT:
+        kind = "video"
+    else:
+        return jsonify({"ok": False, "error": "该类型不支持缩略图"}), 415
+
+    try:
+        cache_path = _thumb_cache_path(rel_of(src), src, THUMB_SIZE)
+    except OSError:
+        return jsonify({"ok": False, "error": "无法读取文件"}), 500
+
+    # 命中缓存：直接返回
+    if cache_path.exists():
+        return _thumb_cache_headers(
+            send_file(str(cache_path), mimetype="image/webp", conditional=True)
+        )
+
+    # 未命中：生成
+    try:
+        data = _build_thumb_with_lock(src, kind, cache_path, THUMB_SIZE)
+    except _ThumbUnsupported as e:
+        return jsonify({"ok": False, "error": str(e)}), 415
+    except Exception as e:  # noqa: BLE001
+        # 不写缓存 —— 下次请求会重试
+        return jsonify({"ok": False, "error": f"缩略图生成失败：{e}"}), 500
+
+    return _thumb_cache_headers(Response(data, mimetype="image/webp"))
 
 
 # ---------------------------------------------------------------------------
@@ -1671,39 +1831,7 @@ def api_thumbnail():
     """
     rel = request.args.get("path", "")
     src = safe_path(rel)
-
-    if not src.exists() or not src.is_file():
-        return jsonify({"ok": False, "error": "文件不存在"}), 404
-
-    ext = src.suffix.lower().lstrip(".")
-    if ext in THUMB_IMAGE_EXT:
-        kind = "image"
-    elif ext in THUMB_VIDEO_EXT:
-        kind = "video"
-    else:
-        return jsonify({"ok": False, "error": "该类型不支持缩略图"}), 415
-
-    try:
-        cache_path = _thumb_cache_path(rel_of(src), src, THUMB_SIZE)
-    except OSError:
-        return jsonify({"ok": False, "error": "无法读取文件"}), 500
-
-    # 命中缓存：直接返回
-    if cache_path.exists():
-        return _thumb_cache_headers(
-            send_file(str(cache_path), mimetype="image/webp", conditional=True)
-        )
-
-    # 未命中：生成
-    try:
-        data = _build_thumb_with_lock(src, kind, cache_path, THUMB_SIZE)
-    except _ThumbUnsupported as e:
-        return jsonify({"ok": False, "error": str(e)}), 415
-    except Exception as e:  # noqa: BLE001
-        # 不写缓存 —— 下次请求会重试
-        return jsonify({"ok": False, "error": f"缩略图生成失败：{e}"}), 500
-
-    return _thumb_cache_headers(Response(data, mimetype="image/webp"))
+    return _serve_thumbnail(src)
 
 
 @app.route("/api/delete", methods=["POST"])
@@ -2017,6 +2145,218 @@ def api_apikeys_delete(kid: str):
 
     _save_apikeys(left)
     return jsonify({"ok": True, "deleted": kid})
+
+
+# ---------------------------------------------------------------------------
+# 分享链接：管理（需鉴权）+ 公开访问（凭 token，免登录）
+# ---------------------------------------------------------------------------
+#
+# 路由划分（注意单复数与末尾斜杠，鉴权网关靠前缀放行）：
+#   /api/shares           管理：列出全部分享（GET，需鉴权）
+#   /api/shares           管理：新建分享（POST，需鉴权）
+#   /api/shares/<id>      管理：启用/禁用/改有效期（PATCH，需鉴权）
+#   /api/shares/<id>      管理：撤销分享（DELETE，需鉴权）
+#   /api/share/<token>    公开：查看分享内容（免登录）
+#   /api/share/<token>/download   公开：下载分享内的文件（免登录）
+#   /api/share/<token>/thumbnail  公开：分享内文件的缩略图（免登录）
+#
+# 公开接口的安全由 token 自身保证：token 是链接的唯一保密要素，
+# 泄露即等同于文件泄露；服务端只对「有效且未过期」的 token 返回内容，
+# 且下载/缩略图都经过 share_allows() 的范围校验，无法越权访问分享外的文件。
+
+
+@app.route("/api/shares", methods=["GET"])
+def api_shares_list():
+    """列出全部分享（管理页用，需鉴权）。"""
+    items = [public_share_view(r) for r in load_shares()]
+    items.sort(key=lambda x: x.get("created_at", 0), reverse=True)
+    active = sum(1 for i in items if i["active"])
+    return jsonify({
+        "ok": True,
+        "items": items,
+        "count": len(items),
+        "active": active,
+    })
+
+
+@app.route("/api/shares", methods=["POST"])
+def api_shares_create():
+    """
+    新建分享。
+
+    body: { path: 相对路径, expires_days?: 0 表示永不过期 }
+    """
+    data = request.get_json(silent=True) or {}
+    rel = (data.get("path") or "").strip()
+    if not rel:
+        return jsonify({"ok": False, "error": "未指定要分享的路径"}), 400
+
+    try:
+        days = max(0, int(data.get("expires_days") or 0))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "有效期必须是非负整数（天）"}), 400
+
+    try:
+        rec = create_share(rel, days)
+    except FileNotFoundError:
+        return jsonify({"ok": False, "error": "目标不存在"}), 404
+    except ValueError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+
+    return jsonify({"ok": True, "item": public_share_view(rec)})
+
+
+@app.route("/api/shares/<sid>", methods=["PATCH"])
+def api_shares_update(sid: str):
+    """启用 / 禁用分享，或改有效期。"""
+    sid = (sid or "").strip()
+    data = request.get_json(silent=True) or {}
+    items = load_shares()
+    rec = next((r for r in items if r.get("id") == sid), None)
+    if not rec:
+        return jsonify({"ok": False, "error": "分享不存在"}), 404
+
+    if "enabled" in data:
+        rec["enabled"] = bool(data["enabled"])
+    if "expires_days" in data:
+        days = max(0, int(data.get("expires_days") or 0))
+        rec["expires_at"] = int(time.time()) + days * 86400 if days else 0
+
+    _save_shares(items)
+    return jsonify({"ok": True, "item": public_share_view(rec)})
+
+
+@app.route("/api/shares/<sid>", methods=["DELETE"])
+def api_shares_delete(sid: str):
+    """撤销分享（链接立即失效）。"""
+    sid = (sid or "").strip()
+    items = load_shares()
+    left = [r for r in items if r.get("id") != sid]
+    if len(left) == len(items):
+        return jsonify({"ok": False, "error": "分享不存在"}), 404
+    _save_shares(left)
+    return jsonify({"ok": True, "deleted": sid})
+
+
+def _share_scope_target(rec: dict, rel: str) -> Path | None:
+    """
+    把「存储根相对路径」解析成绝对路径，并校验落在分享范围内。
+
+    与 /api/list 同口径：前端传来的 path 都是相对存储根的。
+    返回 None 表示越权或非法（调用方据此回 403/404）。
+    """
+    target = safe_path(rel)
+    if not share_allows(rec, target):
+        return None
+    return target
+
+
+def _share_crumbs(root_path: str, target_rel: str) -> list:
+    """
+    生成相对分享根的面包屑。每段 path 仍是「存储根相对路径」，
+    方便前端直接拿去请求下一层（与列表项 path 同口径）。
+    """
+    prefix = root_path.rstrip("/")
+    rest = target_rel
+    if prefix:
+        if rest == prefix:
+            rest = ""
+        elif rest.startswith(prefix + "/"):
+            rest = rest[len(prefix) + 1:]
+        else:
+            rest = ""
+    segs = [s for s in rest.split("/") if s]
+    crumbs, acc = [], []
+    for seg in segs:
+        acc.append(seg)
+        crumbs.append({
+            "name": seg,
+            "path": (prefix + "/" + "/".join(acc)) if prefix else "/".join(acc),
+        })
+    return crumbs
+
+
+@app.route("/api/share/<token>")
+def api_share_view(token: str):
+    """公开查看分享内容（免登录）。path 为存储根相对路径。"""
+    rec = find_share(token)
+    if not rec:
+        return jsonify({"ok": False, "error": "分享不存在或已失效"}), 404
+
+    root = safe_path(rec.get("path", ""))
+    if not root.exists():
+        return jsonify({"ok": False, "error": "分享内容已被移除"}), 404
+
+    rel = (request.args.get("path") or "").strip()
+
+    if rec.get("is_dir"):
+        # 目录分享：target 是分享根或其子树里的某个目录
+        target = _share_scope_target(rec, rel) if rel else root
+        if target is None or not target.is_dir():
+            return jsonify({"ok": False, "error": "不在分享范围内或路径非法"}), 403
+        dirs, files = [], []
+        for child in target.iterdir():
+            try:
+                meta = entry_meta(child)
+            except (OSError, PermissionError):
+                continue
+            (dirs if meta["is_dir"] else files).append(meta)
+        dirs.sort(key=lambda x: x["name"].lower())
+        files.sort(key=lambda x: x["name"].lower())
+        items, file_entry = dirs + files, None
+    else:
+        # 文件分享：只认分享根本身，param 必须是空或相同路径
+        if rel and rel != rec.get("path", ""):
+            return jsonify({"ok": False, "error": "不在分享范围内"}), 403
+        target = root
+        items, file_entry = [], entry_meta(root)
+
+    return jsonify({
+        "ok": True,
+        "token": token,
+        "is_dir": bool(rec.get("is_dir")),
+        "root_path": rec.get("path", ""),
+        "root_name": root.name,
+        "path": rel_of(target),
+        "name": target.name,
+        "crumbs": _share_crumbs(rec.get("path", ""), rel_of(target)),
+        "items": items,
+        "file": file_entry,
+    })
+
+
+@app.route("/api/share/<token>/download")
+def api_share_download(token: str):
+    """公开下载分享内的文件（免登录）。范围校验由 share_allows 把关。"""
+    rec = find_share(token)
+    if not rec:
+        return jsonify({"ok": False, "error": "分享不存在或已失效"}), 404
+
+    rel = (request.args.get("path") or "").strip()
+    target = _share_scope_target(rec, rel)
+    if target is None or not target.is_file():
+        abort(404, "文件不存在或不在分享范围内")
+
+    return send_file(
+        str(target),
+        as_attachment=True,
+        download_name=target.name,
+        conditional=True,
+    )
+
+
+@app.route("/api/share/<token>/thumbnail")
+def api_share_thumbnail(token: str):
+    """公开获取分享内文件的缩略图（免登录）。复用与 /api/thumbnail 同一套逻辑。"""
+    rec = find_share(token)
+    if not rec:
+        abort(404, "分享不存在或已失效")
+
+    rel = (request.args.get("path") or "").strip()
+    target = _share_scope_target(rec, rel)
+    if target is None:
+        abort(403, "不在分享范围内")
+    return _serve_thumbnail(target)
 
 
 @app.route("/")
