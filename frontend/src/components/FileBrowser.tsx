@@ -24,10 +24,12 @@ import { api, ApiError } from '../api/client'
 import type { Entry } from '../types/api'
 import { useToast } from '../context/ToastContext'
 import { buildBreadcrumb, cn, humanSize, parentPath, splitPath } from '../lib/utils'
+import { navigate, parseHash, syncDiskPath } from '../lib/router'
 import FileRow from './FileRow'
 import PreviewModal from './PreviewModal'
 import PromptModal from './PromptModal'
 import ConfirmModal from './ConfirmModal'
+import ShareModal from './ShareModal'
 import {
   ActionSheet,
   Button,
@@ -81,6 +83,8 @@ const FileBrowser = forwardRef<FileBrowserHandle, Props>(function FileBrowser(
   const [mkdirOpen, setMkdirOpen] = useState(false)
   /** 移动端长按唤出的操作抽屉：非空即打开，值是被操作的那一项 */
   const [sheetFor, setSheetFor] = useState<Entry | null>(null)
+  /** 分享弹窗：非空即打开，值是被分享的那一项 */
+  const [shareFor, setShareFor] = useState<Entry | null>(null)
   const [busy, setBusy] = useState(false)
   const [batchBusy, setBatchBusy] = useState(false)
   const [batchProgress, setBatchProgress] = useState(0)
@@ -100,6 +104,9 @@ const FileBrowser = forwardRef<FileBrowserHandle, Props>(function FileBrowser(
         setPath(res.path ?? target)
         setSelected(new Set())
         setSelectMode(false)
+        // 把当前目录同步进 URL（hash 路由），浏览器前进/后退也能用。
+        // navigate 内部对「hash 已相同」做了短路，不会无谓写历史。
+        syncDiskPath(res.path ?? target)
       } catch (err) {
         if (seq !== reqSeq.current) return
         const msg = err instanceof ApiError ? err.friendly : '加载失败'
@@ -129,9 +136,21 @@ const FileBrowser = forwardRef<FileBrowserHandle, Props>(function FileBrowser(
     [load],
   )
 
-  // 首次加载
+  // 首次加载：以 URL hash 里的目录为准（直接打开带目录的链接时）
   useEffect(() => {
-    void load('')
+    const r = parseHash()
+    void load(r.view === 'disk' ? r.path : '')
+  }, [load])
+
+  // 浏览器前进/后退：hash 变了但仍是磁盘视图时，重载到对应目录
+  useEffect(() => {
+    const onHash = () => {
+      const r = parseHash()
+      if (r.view !== 'disk') return
+      if (r.path !== pathRef.current) void load(r.path)
+    }
+    window.addEventListener('hashchange', onHash)
+    return () => window.removeEventListener('hashchange', onHash)
   }, [load])
 
   useEffect(() => {
@@ -332,6 +351,12 @@ const FileBrowser = forwardRef<FileBrowserHandle, Props>(function FileBrowser(
     }
 
     items.push({
+      key: 'share',
+      label: '分享',
+      icon: ICONS.share,
+      onClick: () => setShareFor(entry),
+    })
+    items.push({
       key: 'rename',
       label: '重命名',
       icon: ICONS.rename,
@@ -352,7 +377,7 @@ const FileBrowser = forwardRef<FileBrowserHandle, Props>(function FileBrowser(
 
   // 键盘快捷键：仅当没有弹窗时生效
   // 抽屉也算「弹窗」：它锁了 body 滚动，此时放快捷键会与抽屉互相打架
-  const anyModalOpen = !!(preview || renaming || deleting || mkdirOpen || sheetFor)
+  const anyModalOpen = !!(preview || renaming || deleting || mkdirOpen || sheetFor || shareFor)
   useEffect(() => {
     if (anyModalOpen) return
     const onKey = (e: KeyboardEvent) => {
@@ -509,6 +534,15 @@ const FileBrowser = forwardRef<FileBrowserHandle, Props>(function FileBrowser(
         {/* 操作按钮 */}
         <div className="flex w-full items-center gap-2 sm:w-auto">
           <Button
+            onClick={() => setShareFor({ name: path ? path.split('/').pop()! : '根目录', path, is_dir: true } as Entry)}
+            icon={<Icon d={ICONS.share} />}
+            disabled={!path}
+            title={path ? `分享目录 ${path}` : '不能分享根目录'}
+            className="flex-1 sm:flex-none"
+          >
+            分享
+          </Button>
+          <Button
             onClick={() => setMkdirOpen(true)}
             icon={<Icon d={ICONS.folderPlus} />}
             className="flex-1 sm:flex-none"
@@ -645,6 +679,7 @@ const FileBrowser = forwardRef<FileBrowserHandle, Props>(function FileBrowser(
                 onPreview={setPreview}
                 onRename={setRenaming}
                 onDelete={(e) => setDeleting([e])}
+                onShare={(e) => setShareFor(e)}
                 onLongPress={setSheetFor}
               />
             ))}
@@ -653,6 +688,17 @@ const FileBrowser = forwardRef<FileBrowserHandle, Props>(function FileBrowser(
       </div>
 
       {/* ═══ 弹窗 ═══ */}
+      <ShareModal
+        open={!!shareFor}
+        onClose={() => setShareFor(null)}
+        targetPath={shareFor?.path ?? ''}
+        targetName={shareFor?.name ?? ''}
+        isDir={!!shareFor?.is_dir}
+        onManage={() => {
+          setShareFor(null)
+          navigate({ view: 'shares' })
+        }}
+      />
       <PreviewModal entry={preview} onClose={() => setPreview(null)} />
 
       <PromptModal

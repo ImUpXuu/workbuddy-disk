@@ -17,9 +17,12 @@ import type {
   ListResponse,
   LoginResponse,
   MkdirResponse,
+  PublicShareResponse,
   RenameResponse,
   Settings,
   SettingsResponse,
+  ShareCreateResponse,
+  ShareListResponse,
   StatsResponse,
   UploadCompleteResponse,
   UploadInitResponse,
@@ -746,6 +749,107 @@ export const api = {
     return request<ApiKeyMutateResponse>(`/api/apikeys/${encodeURIComponent(id)}`, {
       method: 'DELETE',
     })
+  },
+
+  // ── 分享 ──────────────────────────────────────────────────────
+
+  /** 列出全部分享（管理，需鉴权） */
+  listShares(): Promise<ShareListResponse> {
+    return get<ShareListResponse>('/api/shares')
+  },
+
+  /** 新建分享。expiresDays=0 表示永不过期 */
+  createShare(path: string, expiresDays = 0): Promise<ShareCreateResponse> {
+    return post<ShareCreateResponse>('/api/shares', { path, expires_days: expiresDays })
+  },
+
+  /** 启用 / 禁用分享 */
+  toggleShare(id: string, enabled: boolean): Promise<ApiKeyMutateResponse> {
+    return request<ApiKeyMutateResponse>(`/api/shares/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      json: { enabled },
+    })
+  },
+
+  /** 撤销分享 */
+  revokeShare(id: string): Promise<ApiKeyMutateResponse> {
+    return request<ApiKeyMutateResponse>(`/api/shares/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    })
+  },
+
+  /**
+   * 公开查看分享内容（免登录）。
+   * @param sub 目录分享内的相对子路径（可选）
+   */
+  getPublicShare(token: string, sub = ''): Promise<PublicShareResponse> {
+    return get<PublicShareResponse>(
+      `/api/share/${encodeURIComponent(token)}`,
+      sub ? { path: sub } : undefined,
+      { auth: false },
+    )
+  },
+
+  /** 公开分享的下载直链（供 <a href> / 预览原生标签使用） */
+  shareDownloadUrl(token: string, path: string): string {
+    const p = new URLSearchParams()
+    if (path) p.set('path', path)
+    return `${API_BASE}/api/share/${encodeURIComponent(token)}/download?${p.toString()}`
+  },
+
+  /** 公开分享的缩略图直链 */
+  shareThumbnailUrl(token: string, path: string): string {
+    const p = new URLSearchParams()
+    if (path) p.set('path', path)
+    return `${API_BASE}/api/share/${encodeURIComponent(token)}/thumbnail?${p.toString()}`
+  },
+
+  /**
+   * 以 Blob 方式下载分享内的文件（免登录，走 fetch 而非直链，
+   * 便于拿进度、且不把链接写进历史）。
+   */
+  async fetchShareBlob(
+    token: string,
+    path: string,
+    onProgress?: (loaded: number, total: number) => void,
+    signal?: AbortSignal,
+  ): Promise<Blob> {
+    const url = `/api/share/${encodeURIComponent(token)}/download`
+    return requestBlob(url, path ? { path } : undefined, onProgress, signal)
+  },
+
+  /** 取分享内媒体缩略图的 Object URL */
+  async fetchShareThumbnailUrl(token: string, path: string, signal?: AbortSignal): Promise<string> {
+    const blob = await requestBlob(
+      `/api/share/${encodeURIComponent(token)}/thumbnail`,
+      path ? { path } : undefined,
+      undefined,
+      signal,
+    )
+    return URL.createObjectURL(blob)
+  },
+
+  /** 触发浏览器下载分享内的文件 */
+  async shareDownload(
+    token: string,
+    path: string,
+    filename: string,
+    onProgress?: (loaded: number, total: number) => void,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const blob = await api.fetchShareBlob(token, path, onProgress, signal)
+    const url = URL.createObjectURL(blob)
+    try {
+      const a = document.createElement('a')
+      a.href = url
+      a.download = filename
+      a.rel = 'noopener'
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+    } finally {
+      setTimeout(() => URL.revokeObjectURL(url), 60_000)
+    }
   },
 }
 

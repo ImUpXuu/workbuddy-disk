@@ -91,8 +91,43 @@ pnpm build              # 产物在 dist/，可直接丢给 Vercel
 | `POST` | `/api/apikeys` | 新建 API Key | ✓ |
 | `PATCH` | `/api/apikeys/<id>` | 改名 / 启停 | ✓ |
 | `DELETE` | `/api/apikeys/<id>` | 删除 API Key | ✓ |
+| `GET` | `/api/shares` | 列出全部分享（管理） | ✓ |
+| `POST` | `/api/shares` | 新建分享（`path` / `expires_days`） | ✓ |
+| `PATCH` | `/api/shares/<id>` | 启停 / 改有效期 | ✓ |
+| `DELETE` | `/api/shares/<id>` | 撤销分享 | ✓ |
+| `GET` | `/api/share/<token>` | 公开查看分享内容（**免登录**） | — |
+| `GET` | `/api/share/<token>/download` | 公开下载（**免登录**） | — |
+| `GET` | `/api/share/<token>/thumbnail` | 公开缩略图（**免登录**） | — |
 
 完整参数与 `curl` 示例见 [`backend/API使用说明.md`](./backend/API使用说明.md)。
+
+---
+
+## 分享链接
+
+把任意目录或文件变成一条**免登录**即可打开的公开链接：
+
+```bash
+# 分享某个目录（返回 token 与公开链接 /#/s/<token>）
+curl -X POST "$BASE/api/shares" -H "X-API-Key: $KEY" \
+  -H "Content-Type: application/json" -d '{"path":"photos/2024","expires_days":0}'
+
+# 任何人拿链接都能直接看（无需任何凭证）
+curl "$BASE/api/share/<token>"
+curl "$BASE/api/share/<token>/download?path=photos/2024/a.jpg"
+```
+
+- 目录分享覆盖整个子树；文件分享只暴露那一个文件。
+- 链接即凭证：`token` 是 URL 里唯一的保密要素，泄露等同于内容泄露，
+  因此服务端**明文存储**（与 API Key 的哈希存储不同）。
+- 有效期 `expires_days`：`0` 表示永不过期；过期 / 被停用 / 被撤销都立即 404。
+- 范围校验：下载与缩略图都过 `share_allows()`，越权访问分享外的路径直接拒绝。
+- 前端用 **hash 路由**（如 `#/d/photos/2024`、`#/s/<token>`），
+  服务端永远只服务 `/`，目录链接与分享链接在任意托管方式下都能直接打开，
+  浏览器前进 / 后退也能正确回退目录层级。
+
+> ⚠️ 分享链接是公开入口，发给别人即代表授权其访问对应内容；
+> 不再需要时请到「分享管理」页撤销。
 
 ### 鉴权凭证
 

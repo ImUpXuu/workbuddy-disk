@@ -18,6 +18,7 @@ import { useToast } from '../context/ToastContext'
 import { useIsUploading, useUploadActions, useUploadUnloadGuard } from '../hooks/useUpload'
 import { api } from '../api/client'
 import { DEFAULT_UPLOAD_CHUNK_SIZE } from '../lib/uploadEngine'
+import { navigate } from '../lib/router'
 import { Button, Icon, ICONS } from '../components/ui'
 
 /** 上传完成后的列表刷新去抖窗口（毫秒） */
@@ -142,7 +143,7 @@ export default function DiskPage() {
         <div className="mx-auto flex w-full max-w-5xl items-center gap-3 px-4 py-4">
           <button
             type="button"
-            onClick={() => setPath('')}
+            onClick={() => navigate({ view: 'disk', path: '' })}
             className="flex min-w-0 items-center gap-2 text-xl font-black text-[--color-sky-600] transition-opacity hover:opacity-80 sm:text-2xl"
             aria-label="回到根目录"
           >
@@ -158,6 +159,16 @@ export default function DiskPage() {
           <span className="chip hidden border-2 border-[--color-sky-200] bg-white text-[--color-sky-600] sm:inline-flex">
             {mode === 'apikey' ? 'API Key' : '会话'}
           </span>
+
+          <Button
+            onClick={() => navigate({ view: 'shares' })}
+            size="sm"
+            variant="ghost"
+            className="hidden sm:inline-flex"
+            icon={<Icon d={ICONS.users} className="size-3.5" />}
+          >
+            分享管理
+          </Button>
 
           <Button
             onClick={logout}

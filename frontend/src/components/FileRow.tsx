@@ -85,6 +85,7 @@ interface Props {
   onPreview(entry: Entry): void
   onRename(entry: Entry): void
   onDelete(entry: Entry): void
+  onShare(entry: Entry): void
   /** 长按唤出操作菜单（仅移动端）。不传则长按无效果 */
   onLongPress?(entry: Entry): void
 }
@@ -99,6 +100,7 @@ export default function FileRow({
   onPreview,
   onRename,
   onDelete,
+  onShare,
   onLongPress,
 }: Props) {
   const toast = useToast()
@@ -387,6 +389,16 @@ export default function FileRow({
             </IconButton>
           </>
         )}
+
+        <IconButton
+          label="分享"
+          onClick={(e) => {
+            e.stopPropagation()
+            onShare(entry)
+          }}
+        >
+          <Icon d={ICONS.share} />
+        </IconButton>
 
         <IconButton
           label="重命名"

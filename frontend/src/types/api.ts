@@ -160,6 +160,73 @@ export interface ApiKeyMutateResponse extends ApiEnvelope {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// 分享链接
+// ═══════════════════════════════════════════════════════════════════
+
+/** 单条分享记录的公开视图（管理页用，含完整链接 token） */
+export interface ShareRecord {
+  id: string
+  token: string
+  /** 可直接打开的链接（hash 路由形态） */
+  url: string
+  /** 相对存储根的路径 */
+  path: string
+  /** true=目录分享（覆盖整个子树），false=单个文件 */
+  is_dir: boolean
+  enabled: boolean
+  created_at: number
+  created_h: string
+  /** 0 表示永不过期 */
+  expires_at: number
+  expires_h: string
+  expired: boolean
+  /** 是否当前有效（启用且未过期） */
+  active: boolean
+}
+
+/** GET /api/shares */
+export interface ShareListResponse extends ApiEnvelope {
+  items: ShareRecord[]
+  count: number
+  active: number
+}
+
+/** POST /api/shares */
+export interface ShareCreateResponse extends ApiEnvelope {
+  item: ShareRecord
+}
+
+/** 公开分享的内容视图（免登录） */
+export interface PublicShare {
+  token: string
+  is_dir: boolean
+  /** 分享根的相对路径 */
+  root_path: string
+  root_name: string
+  /** 当前所在目录的相对路径（等于 root_path 时即在分享根） */
+  path: string
+  name: string
+  /** 相对分享根的面包屑，每段 {name, path}（path 为分享内相对子路径） */
+  crumbs: { name: string; path: string }[]
+  items: Entry[]
+  /** 文件分享时返回该文件元信息，目录分享时为 null */
+  file: Entry | null
+}
+
+/** GET /api/share/<token> */
+export interface PublicShareResponse extends ApiEnvelope {
+  token: string
+  is_dir: boolean
+  root_path: string
+  root_name: string
+  path: string
+  name: string
+  crumbs: { name: string; path: string }[]
+  items: Entry[]
+  file: Entry | null
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // 上传
 // ═══════════════════════════════════════════════════════════════════
 
