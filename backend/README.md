@@ -125,6 +125,7 @@ POST /api/upload/complete  → 合并
 | POST | `/api/upload/abort` | 分片：中止 | ✅ |
 | GET | `/api/upload/status` | 查会话状态 | |
 | GET | `/api/download` | 下载（支持 Range） | |
+| OPTIONS/PROPFIND/GET/HEAD/PUT/DELETE/MKCOL/MOVE/COPY/PROPPATCH/LOCK/UNLOCK | `/dav/...` | **WebDAV** 协议挂载（HTTP Basic Auth，密码=登录密钥或 API Key） | ✅（写类） |
 | GET | `/api/thumbnail` | 媒体缩略图（图片/视频，WebP） | |
 | POST | `/api/delete` | 删除 | ✅ |
 | POST | `/api/rename` | 重命名 | ✅ |
@@ -184,6 +185,29 @@ curl "$BASE/api/share/<token>/download?path=photos/2024/a.jpg"
 
 > ⚠️ 分享链接是公开入口，发给别人即代表授权其访问对应内容；
 > 不再需要时请到「分享管理」页撤销。
+
+## WebDAV
+
+后端实现了标准 WebDAV 协议，可把整个存储根目录挂载为网络磁盘，
+直接拖拽读写，无需走网页。
+
+- 挂载点 `/dav/`，鉴权用 **HTTP Basic Auth**：用户名任意，密码为
+  **登录密钥**或任意一个 **API Key**。
+- 支持方法：`OPTIONS` `PROPFIND` `GET` `HEAD` `PUT` `DELETE` `MKCOL`
+  `MOVE` `COPY` `PROPPATCH` `LOCK` `UNLOCK`；`GET` 支持 `Range` 断点续传。
+- 写入类操作（PUT/DELETE/MKCOL/MOVE/COPY/PROPPATCH）对 **API Key** 用户
+  受 `allow_dangerous` 开关约束；登录密钥用户始终允许。
+- 所有路径都过 `safe_path()` 前缀校验，杜绝 `../` 穿越。
+- `Depth` 仅展开一层（含 `infinity`），避免超大响应。
+
+```bash
+# 列根目录（密码=登录密钥；用户名随意）
+curl -u "admin:$KEY" -X PROPFIND "$BASE/dav/" -H "Depth: 1"
+# 上传 / 改名 / 删除
+curl -u "admin:$KEY" -X PUT  "$BASE/dav/hello.txt" -d "hi"
+curl -u "admin:$KEY" -X MOVE "$BASE/dav/hello.txt" -H "Destination: $BASE/dav/hi.txt"
+curl -u "admin:$KEY" -X DELETE "$BASE/dav/hi.txt"
+```
 
 ## 安全设计
 

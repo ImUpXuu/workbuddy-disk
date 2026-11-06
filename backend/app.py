@@ -31,10 +31,13 @@ import hmac
 import base64
 import hashlib
 import secrets
+import mimetypes
 import subprocess
 import threading
+import email.utils
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import quote
 
 from flask import (
     Flask, request, jsonify, send_file,
@@ -996,12 +999,19 @@ def _auth_guard():
     _AUTH_CTX.info = {"kind": "none", "key": None}
 
     # 0) CORS 预检：无条件放行，只回 CORS 头，不碰业务逻辑
-    if request.method == "OPTIONS":
+    #    注意排除 /dav/ —— WebDAV 的 OPTIONS 需要返回 DAV 能力头，
+    #    必须在下面的 dav 分支里单独处理（after_request 仍会补 CORS 头）。
+    if request.method == "OPTIONS" and not path.startswith("/dav/"):
         resp = make_response("", 204)
         return apply_cors(resp, cors_origin_for(request))
 
     # 静态资源与免鉴权路径放行
     if path in PUBLIC_PATHS or path.startswith("/static/"):
+        return None
+
+    # WebDAV 接口（/dav/）：使用 HTTP Basic Auth，密码即「登录密钥」或「API Key」，
+    # 与全局 Bearer/Cookie 网关相互独立，故在此放行全局鉴权、在 dav handler 内单独校验。
+    if path.startswith("/dav/"):
         return None
 
     # 公开分享接口：凭链接里的 token 访问，免登录。
@@ -2357,6 +2367,373 @@ def api_share_thumbnail(token: str):
     if target is None:
         abort(403, "不在分享范围内")
     return _serve_thumbnail(target)
+
+
+# ---------------------------------------------------------------------------
+# WebDAV 协议支持
+# ---------------------------------------------------------------------------
+#
+# 挂载点：/dav/  →  STORAGE_ROOT（整盘根）
+# 鉴权：HTTP Basic Auth。密码 = 「登录密钥(ACCESS_KEY)」或「API Key」，用户名任意（忽略）。
+#   WebDAV 客户端（Windows 资源管理器 / macOS Finder / rclone / Cyberduck / Mountain Duck）
+#   一律走 Basic Auth，与浏览器的 Bearer/Cookie 网关无关，故在 _auth_guard 里对 /dav/ 前缀放行、
+#   由各 handler 单独校验。
+# 安全：所有路径先过 safe_path() 前缀校验（防 ../ 穿越）；写入类操作（PUT/DELETE/MKCOL/MOVE/COPY/
+#   PROPPATCH）对 API Key 用户同样受 allow_dangerous 开关约束，与 REST API 行为一致。
+#
+# 支持的方法：
+#   OPTIONS  能力声明（DAV 头 / Allow）
+#   PROPFIND 属性查询 / 列目录（Depth 0 / 1）
+#   GET/HEAD 下载 / 取元数据（GET 支持 Range 断点续传）
+#   PUT      上传（新建或覆盖）
+#   DELETE   删除
+#   MKCOL    建目录
+#   MOVE     改名 / 移动（读 Destination + Overwrite 头）
+#   COPY     复制
+#   PROPPATCH 属性写（no-op，返回 207 以维持客户端兼容）
+#   LOCK/UNLOCK 乐观锁（返回成功但不强制，仅为兼容 Finder / Explorer 的探测）
+
+_DAV_NS = "DAV:"
+
+
+def _dav_rel_from_path() -> str:
+    """请求路径 /dav/foo/bar → 相对存储根的路径 foo/bar（根目录返回空串）。"""
+    rel = request.path[len("/dav"):]
+    if rel.startswith("/"):
+        rel = rel[1:]
+    return rel
+
+
+def _dav_target() -> Path:
+    """把当前 /dav/... 请求映射为 STORAGE_ROOT 下的绝对路径（已做安全校验）。"""
+    return safe_path(_dav_rel_from_path())
+
+
+def _dav_auth_info() -> dict | None:
+    """
+    从 HTTP Basic Auth 解析凭证。
+
+    返回 {"kind": "login"}（主人，登录密钥） / {"kind": "apikey", "key": rec} / None（未通过）。
+    密码即凭证：要么是登录密钥 ACCESS_KEY，要么是某个 API Key 明文。
+    """
+    pw = ""
+    auth = request.authorization
+    if auth is not None and getattr(auth, "type", "") == "basic":
+        pw = auth.password or ""
+    else:
+        h = request.headers.get("Authorization", "")
+        if h.startswith("Basic "):
+            try:
+                raw = base64.b64decode(h[6:].strip()).decode("utf-8", "replace")
+                pw = raw.split(":", 1)[1] if ":" in raw else raw
+            except Exception:  # noqa: BLE001
+                pw = ""
+    if not pw:
+        return None
+    if hmac.compare_digest(pw, str(ACCESS_KEY)):
+        return {"kind": "login", "key": None}
+    rec = verify_apikey(pw)
+    if rec:
+        return {"kind": "apikey", "key": rec}
+    return None
+
+
+def _dav_unauthorized():
+    resp = make_response("", 401)
+    resp.headers["WWW-Authenticate"] = 'Basic realm="WorkBuddy NetDisk"'
+    return apply_cors(resp, cors_origin_for(request))
+
+
+def _dav_write_allowed(info: dict) -> bool:
+    """写入类操作是否放行：主人始终允许；API Key 用户受 allow_dangerous 约束。"""
+    if info is None or info.get("kind") != "login":
+        return bool(load_settings().get("allow_dangerous", False))
+    return True
+
+
+def _dav_href(rel: str, is_dir: bool = False) -> str:
+    """构造资源的 DAV href（逐段 URL 编码，根目录与集合带尾斜杠）。"""
+    segs = [s for s in rel.split("/") if s]
+    if not segs:
+        return "/dav/"
+    path = "/".join(quote(s, safe="") for s in segs)
+    return "/dav/" + path + ("/" if is_dir else "")
+
+
+def _dav_propstat(target: Path, rel: str, is_dir: bool) -> str:
+    """生成单个资源的 <D:response> 片段。"""
+    st = target.stat()
+    resourcetype = "<D:collection/>" if is_dir else ""
+    length = 0 if is_dir else st.st_size
+    mtime = email.utils.formatdate(st.st_mtime, usegmt=True)
+    ctime = datetime.utcfromtimestamp(st.st_ctime).strftime("%Y-%m-%dT%H:%M:%SZ")
+    etag = f'"{st.st_ino}-{st.st_mtime_ns}-{st.st_size}"'
+    ctype = "httpd/unix-directory" if is_dir else (mimetypes.guess_type(target.name)[0] or "application/octet-stream")
+    href = _dav_href(rel, is_dir)
+    return (
+        f'<D:response>'
+        f'<D:href>{href}</D:href>'
+        f'<D:propstat><D:prop>'
+        f'<D:resourcetype>{resourcetype}</D:resourcetype>'
+        f'<D:getcontentlength>{length}</D:getcontentlength>'
+        f'<D:getlastmodified>{html.escape(mtime)}</D:getlastmodified>'
+        f'<D:creationdate>{ctime}</D:creationdate>'
+        f'<D:getcontenttype>{html.escape(ctype)}</D:getcontenttype>'
+        f'<D:displayname>{html.escape(target.name)}</D:displayname>'
+        f'<D:getetag>{etag}</D:getetag>'
+        f'</D:prop><D:status>HTTP/1.1 200 OK</D:status></D:propstat>'
+        f'</D:response>'
+    )
+
+
+def _dav_multistatus(responses: list) -> Response:
+    body = (
+        '<?xml version="1.0" encoding="utf-8"?>'
+        '<D:multistatus xmlns:D="DAV:">' + "".join(responses) + "</D:multistatus>"
+    )
+    resp = make_response(body, 207)
+    resp.headers["Content-Type"] = 'application/xml; charset=utf-8'
+    return apply_cors(resp, cors_origin_for(request))
+
+
+def _dav_error(code: int, msg: str) -> Response:
+    return apply_cors(make_response(msg, code), cors_origin_for(request))
+
+
+def _dav_dest_rel() -> str | None:
+    """解析 Destination 头，返回相对存储根的路径；非法则返回 None。"""
+    dest = request.headers.get("Destination", "")
+    if not dest:
+        return None
+    m = re.match(r"^https?://[^/]+(/.*)$", dest)
+    if m:
+        dest = m.group(1)
+    if not dest.startswith("/dav"):
+        return None
+    rel = dest[len("/dav"):]
+    if rel.startswith("/"):
+        rel = rel[1:]
+    return rel
+
+
+@app.route("/dav", defaults={"_p": ""}, strict_slashes=False,
+           methods=["OPTIONS", "PROPFIND", "GET", "HEAD", "PUT", "DELETE", "MKCOL", "MOVE", "COPY", "PROPPATCH", "LOCK", "UNLOCK"])
+@app.route("/dav/", defaults={"_p": ""}, strict_slashes=False,
+           methods=["OPTIONS", "PROPFIND", "GET", "HEAD", "PUT", "DELETE", "MKCOL", "MOVE", "COPY", "PROPPATCH", "LOCK", "UNLOCK"])
+@app.route("/dav/<path:_p>", strict_slashes=False,
+           methods=["OPTIONS", "PROPFIND", "GET", "HEAD", "PUT", "DELETE", "MKCOL", "MOVE", "COPY", "PROPPATCH", "LOCK", "UNLOCK"])
+def dav_dispatch(_p: str):
+    """WebDAV 统一入口，按 HTTP 方法分发。"""
+    method = request.method
+
+    # OPTIONS 能力声明不强制鉴权，方便客户端发现
+    if method == "OPTIONS":
+        resp = make_response("", 200)
+        resp.headers["DAV"] = "1, 2"
+        resp.headers["Allow"] = (
+            "OPTIONS, GET, HEAD, PUT, DELETE, PROPFIND, PROPPATCH, "
+            "MKCOL, COPY, MOVE, LOCK, UNLOCK"
+        )
+        resp.headers["MS-Author-Via"] = "DAV"
+        resp.headers["Accept-Ranges"] = "bytes"
+        return apply_cors(resp, cors_origin_for(request))
+
+    info = _dav_auth_info()
+    if info is None:
+        return _dav_unauthorized()
+
+    if method == "PROPFIND":
+        return _dav_propfind()
+    if method == "PROPPATCH":
+        return _dav_propfind(empty=True)
+    if method in ("GET", "HEAD"):
+        return _dav_get(head=(method == "HEAD"))
+    if method == "PUT":
+        return _dav_put(info)
+    if method == "DELETE":
+        return _dav_delete(info)
+    if method == "MKCOL":
+        return _dav_mkcol(info)
+    if method == "MOVE":
+        return _dav_move(info)
+    if method == "COPY":
+        return _dav_copy(info)
+    if method == "LOCK":
+        token = f"opaquelocktoken:{_rand_id(20)}"
+        resp = make_response("", 200)
+        resp.headers["Lock-Token"] = f"<{token}>"
+        return apply_cors(resp, cors_origin_for(request))
+    if method == "UNLOCK":
+        return apply_cors(make_response("", 204), cors_origin_for(request))
+    return _dav_error(405, "Method Not Allowed")
+
+
+def _dav_propfind(empty: bool = False) -> Response:
+    """PROPFIND：属性查询 / 列目录。empty=True 用于 PROPPATCH 的 no-op 响应。"""
+    target = _dav_target()
+    if not target.exists():
+        return _dav_error(404, "Not Found")
+
+    depth = request.headers.get("Depth", "1")
+    responses = [_dav_propstat(target, _dav_rel_from_path(), target.is_dir())]
+
+    # 目录且需要列子项：仅展开一层（infinity 也降为 1，避免超大响应）
+    if not empty and target.is_dir() and depth in ("1", "infinity"):
+        base = _dav_rel_from_path().strip("/")
+        try:
+            for name in sorted(os.listdir(target)):
+                child = target / name
+                child_rel = f"{base}/{name}" if base else name
+                responses.append(_dav_propstat(child, child_rel, child.is_dir()))
+        except OSError:
+            pass
+
+    return _dav_multistatus(responses)
+
+
+def _dav_get(head: bool = False) -> Response:
+    """GET 下载 / HEAD 取元数据（Range 断点续传由 send_file(conditional=True) 处理）。"""
+    target = _dav_target()
+    if not target.exists() or not target.is_file():
+        return _dav_error(404, "Not Found")
+    st = target.stat()
+    ctype = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+    if head:
+        resp = make_response("")
+        resp.headers["Content-Type"] = ctype
+        resp.headers["Content-Length"] = str(st.st_size)
+        resp.headers["Accept-Ranges"] = "bytes"
+        resp.headers["Last-Modified"] = email.utils.formatdate(st.st_mtime, usegmt=True)
+        resp.headers["ETag"] = f'"{st.st_ino}-{st.st_mtime_ns}-{st.st_size}"'
+        return apply_cors(resp, cors_origin_for(request))
+    return send_file(str(target), as_attachment=False, conditional=True)
+
+
+def _dav_put(info: dict) -> Response:
+    """PUT 上传：新建或覆盖文件。"""
+    if not _dav_write_allowed(info):
+        return _dav_error(403, "危险操作开关已关闭")
+    target = _dav_target()
+    if target.exists() and target.is_dir():
+        return _dav_error(409, "Cannot overwrite a directory")
+    parent = target.parent
+    try:
+        os.makedirs(parent, exist_ok=True)
+    except Exception as e:  # noqa: BLE001
+        return _dav_error(409, f"无法创建父目录：{e}")
+    created = not target.exists()
+    try:
+        with open(target, "wb") as f:
+            while True:
+                chunk = request.stream.read(1024 * 1024)
+                if not chunk:
+                    break
+                f.write(chunk)
+    except Exception as e:  # noqa: BLE001
+        return _dav_error(500, f"写入失败：{e}")
+    return apply_cors(make_response("", 201 if created else 204), cors_origin_for(request))
+
+
+def _dav_delete(info: dict) -> Response:
+    """DELETE 删除文件或目录。"""
+    if not _dav_write_allowed(info):
+        return _dav_error(403, "危险操作开关已关闭")
+    target = _dav_target()
+    if not target.exists():
+        return _dav_error(404, "Not Found")
+    if target == STORAGE_ROOT:
+        return _dav_error(403, "Cannot delete root")
+    try:
+        if target.is_dir():
+            shutil.rmtree(target)
+        else:
+            target.unlink()
+    except Exception as e:  # noqa: BLE001
+        return _dav_error(500, f"删除失败：{e}")
+    return apply_cors(make_response("", 204), cors_origin_for(request))
+
+
+def _dav_mkcol(info: dict) -> Response:
+    """MKCOL 建目录。"""
+    if not _dav_write_allowed(info):
+        return _dav_error(403, "危险操作开关已关闭")
+    target = _dav_target()
+    if target.exists():
+        return _dav_error(405, "Already exists")
+    parent = target.parent
+    if not parent.exists() or not parent.is_dir():
+        return _dav_error(409, "Parent directory missing")
+    try:
+        target.mkdir()
+    except Exception as e:  # noqa: BLE001
+        return _dav_error(500, f"创建失败：{e}")
+    return apply_cors(make_response("", 201), cors_origin_for(request))
+
+
+def _dav_move(info: dict) -> Response:
+    """MOVE 改名 / 移动（读 Destination + Overwrite 头）。"""
+    if not _dav_write_allowed(info):
+        return _dav_error(403, "危险操作开关已关闭")
+    src = _dav_target()
+    if not src.exists():
+        return _dav_error(404, "Not Found")
+    if src == STORAGE_ROOT:
+        return _dav_error(403, "Cannot move root")
+    dst_rel = _dav_dest_rel()
+    if dst_rel is None:
+        return _dav_error(400, "Bad Destination")
+    dst = safe_path(dst_rel)
+    overwrite = request.headers.get("Overwrite", "T").upper() != "F"
+    if dst.exists():
+        if not overwrite:
+            return _dav_error(412, "Destination already exists")
+        try:
+            if dst.is_dir():
+                shutil.rmtree(dst)
+            else:
+                dst.unlink()
+        except Exception as e:  # noqa: BLE001
+            return _dav_error(500, f"目标清理失败：{e}")
+    try:
+        os.makedirs(dst.parent, exist_ok=True)
+        src.replace(dst)
+    except Exception as e:  # noqa: BLE001
+        return _dav_error(500, f"移动失败：{e}")
+    return apply_cors(make_response("", 204), cors_origin_for(request))
+
+
+def _dav_copy(info: dict) -> Response:
+    """COPY 复制。"""
+    if not _dav_write_allowed(info):
+        return _dav_error(403, "危险操作开关已关闭")
+    src = _dav_target()
+    if not src.exists():
+        return _dav_error(404, "Not Found")
+    dst_rel = _dav_dest_rel()
+    if dst_rel is None:
+        return _dav_error(400, "Bad Destination")
+    dst = safe_path(dst_rel)
+    created = not dst.exists()
+    overwrite = request.headers.get("Overwrite", "T").upper() != "F"
+    if dst.exists():
+        if not overwrite:
+            return _dav_error(412, "Destination already exists")
+        try:
+            if dst.is_dir():
+                shutil.rmtree(dst)
+            else:
+                dst.unlink()
+        except Exception as e:  # noqa: BLE001
+            return _dav_error(500, f"目标清理失败：{e}")
+    try:
+        os.makedirs(dst.parent, exist_ok=True)
+        if src.is_dir():
+            shutil.copytree(src, dst)
+        else:
+            shutil.copy2(src, dst)
+    except Exception as e:  # noqa: BLE001
+        return _dav_error(500, f"复制失败：{e}")
+    return apply_cors(make_response("", 201 if created else 204), cors_origin_for(request))
 
 
 @app.route("/")
