@@ -53,13 +53,13 @@ export interface ListResponse extends ApiEnvelope {
   chunk_threshold?: number
 }
 
-/** GET /api/stats */
+/** GET /api/stats —— 字段名与后端 jsonify（files/dirs/size/size_h）一致 */
 export interface StatsResponse extends ApiEnvelope {
-  total_files: number
-  total_dirs: number
+  files: number
+  dirs: number
   /** 占用字节数 */
-  total_size: number
-  total_size_h: string
+  size: number
+  size_h: string
 }
 
 // ═══════════════════════════════════════════════════════════════════

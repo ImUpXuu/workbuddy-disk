@@ -1,9 +1,9 @@
 /**
- * 公开分享查看页（免登录）。
+ * 公开分享查看页（免登录）—— 与主界面同一套紧凑表格视图。
  *
- * 凭链接里的 token 直接访问：
- *   - 目录分享：浏览整个子树，点文件夹下钻，点文件预览（图片/视频内联），下载走显式按钮
- *   - 文件分享：展示该文件，可直接预览 / 下载（图片、视频内联）
+ *   - 目录分享：浏览整个子树，点文件夹下钻，点文件预览（图片/视频内联），
+ *     下载走显式按钮，避免「一进分享页就全下下来」
+ *   - 文件分享：展示该文件 + 预览 / 下载
  *
  * 不依赖登录态，任何人拿到链接都能打开。
  */
@@ -12,23 +12,9 @@ import { useCallback, useEffect, useState } from 'react'
 import { api, ApiError } from '../api/client'
 import type { Entry, PublicShareResponse } from '../types/api'
 import { useToast } from '../context/ToastContext'
-import { navigate, parseHash, shareNavigate, useHashRoute } from '../lib/router'
-import { cn, humanSize, humanDate, isVideo, kindOf } from '../lib/utils'
-import { Button, Icon, ICONS } from '../components/ui'
-
-/** 类型 → emoji 字形（与文件列表保持一致风格） */
-const KIND_GLYPH: Record<string, string> = {
-  folder: '📁',
-  image: '🖼️',
-  video: '🎬',
-  audio: '🎵',
-  archive: '🗜️',
-  document: '📄',
-  code: '📜',
-  apk: '📦',
-  font: '🔤',
-  file: '🗂️',
-}
+import { buildBreadcrumb, cn, fileIconOf, fileIconTone, humanDate, humanSize, kindLabel } from '../lib/utils'
+import { shareNavigate, useHashRoute, parseHash } from '../lib/router'
+import { Button, EmptyState, Icon, ICONS, SkeletonRows } from '../components/ui'
 
 export default function ShareViewPage() {
   const toast = useToast()
@@ -38,10 +24,7 @@ export default function ShareViewPage() {
   const [error, setError] = useState('')
   const [preview, setPreview] = useState<Entry | null>(null)
 
-  // 跟随 hash 变化（分享内下钻 / 浏览器前进后退）
-  useHashRoute((r) => {
-    if (r.view === 'share') setRoute(r)
-  })
+  useHashRoute((r) => { if (r.view === 'share') setRoute(r) })
 
   const token = route.token
   const sub = route.sharePath
@@ -51,24 +34,18 @@ export default function ShareViewPage() {
     setLoading(true)
     setError('')
     try {
-      const res = await api.getPublicShare(token, sub)
-      setData(res)
+      setData(await api.getPublicShare(token, sub))
     } catch (err) {
-      if (err instanceof ApiError) {
-        if (err.kind === 'notfound') setError('链接不存在或已失效')
-        else setError(err.friendly)
-      } else {
-        setError('加载失败')
-      }
+      setError(err instanceof ApiError
+        ? (err.kind === 'notfound' ? '链接不存在或已失效' : err.friendly)
+        : '加载失败')
       setData(null)
     } finally {
       setLoading(false)
     }
   }, [token, sub])
 
-  useEffect(() => {
-    void load()
-  }, [load])
+  useEffect(() => { void load() }, [load])
 
   async function downloadFile(entry: Entry) {
     const id = toast.info(`开始下载 ${entry.name}`, '准备中…')
@@ -86,320 +63,233 @@ export default function ShareViewPage() {
   }
 
   return (
-    <div className="flex min-h-dvh flex-col">
-      <header className="sticky top-0 z-30 border-b border-slate-100 bg-white/90 backdrop-blur">
-        <div className="mx-auto flex w-full max-w-5xl items-center gap-3 px-4 py-3">
-          <button
-            type="button"
-            onClick={() => navigate({ view: 'disk' })}
-            className="flex min-w-0 items-center gap-2 text-base font-black text-[--color-sky-600] transition-opacity hover:opacity-80 sm:text-lg"
-            aria-label="回到网盘"
-          >
-            <Icon d={ICONS.cloud} className="size-5 shrink-0 text-[--color-sky-400]" strokeWidth={2} />
-            <span className="truncate-1">WorkBuddy Disk</span>
-          </button>
-          <span className="chip ml-auto hidden border-2 border-emerald-200 bg-emerald-50 text-emerald-600 sm:inline-flex">
-            公开分享
-          </span>
-        </div>
+    <div className="flex h-dvh flex-col overflow-hidden bg-[--color-canvas]">
+      {/* 标题栏 */}
+      <header className="flex h-10 shrink-0 items-center gap-2.5 border-b border-[--color-line] bg-white px-3">
+        <Icon d={ICONS.link} className="size-4 text-[--color-accent]" />
+        <span className="text-[13px] font-semibold text-[--color-ink]">WorkBuddy Disk</span>
+        <span className="chip border border-emerald-200 bg-emerald-50 text-[--color-success]">公开分享</span>
+        <span className="ml-auto text-[11.5px] text-[--color-ink-faint]">无需登录即可访问</span>
       </header>
 
-      <main className="mx-auto w-full max-w-5xl flex-1 px-3 pb-10 sm:px-4">
-        {loading ? (
-          <div className="space-y-2 py-6">
-            {[0, 1, 2, 3].map((i) => (
-              <div key={i} className="h-14 animate-pulse rounded-2xl bg-slate-100" />
-            ))}
-          </div>
-        ) : error ? (
-          <div className="cute-border mt-6 rounded-2xl bg-white p-10 text-center">
-            <div className="mb-2 text-4xl opacity-50">🔗</div>
-            <p className="text-base font-black text-slate-700">{error}</p>
-            <p className="mt-1 text-xs font-medium text-slate-400">
-              链接可能已被撤销、停用或已过期
-            </p>
-          </div>
-        ) : (
-          data && (
-            <ShareBody
-              data={data}
-              onOpenDir={(p) => shareNavigate(token, p)}
-              onPreview={setPreview}
-              onDownload={downloadFile}
-            />
-          )
-        )}
-        {preview && (
-          <SharePreview
-            entry={preview}
-            token={token}
-            onClose={() => setPreview(null)}
-            onDownload={(e) => {
-              setPreview(null)
-              void downloadFile(e)
-            }}
-          />
-        )}
+      <main className="min-h-0 flex-1 overflow-auto p-2 max-sm:p-0">
+        <div className="win-panel mx-auto flex min-h-0 max-w-6xl flex-col overflow-hidden">
+          {loading ? (
+            <SkeletonRows rows={8} />
+          ) : error ? (
+            <EmptyState icon={ICONS.link} title={error} hint="链接可能已被撤销、停用或已过期" />
+          ) : data && (
+            <ShareBody data={data} onOpenDir={(p) => shareNavigate(token, p)} onPreview={setPreview} onDownload={downloadFile} />
+          )}
+        </div>
       </main>
+
+      {data && (
+        <div className="win-statusbar">
+          <span>{data.is_dir ? `${data.items.length} 个项目` : '1 个文件'}</span>
+          <span className="sep">|</span>
+          <span className="truncate-1">{data.is_dir ? (data.path || data.root_name) : data.name}</span>
+          <span className="ml-auto">公开链接，任何拿到的人都能查看与下载</span>
+        </div>
+      )}
+
+      {preview && (
+        <SharePreview
+          entry={preview}
+          token={token}
+          onClose={() => setPreview(null)}
+          onDownload={(e) => { setPreview(null); void downloadFile(e) }}
+        />
+      )}
     </div>
   )
 }
 
 function ShareBody({
-  data,
-  onOpenDir,
-  onPreview,
-  onDownload,
+  data, onOpenDir, onPreview, onDownload,
 }: {
   data: PublicShareResponse
   onOpenDir: (relPath: string) => void
   onPreview: (entry: Entry) => void
   onDownload: (entry: Entry) => void
 }) {
-  // 文件分享：展示单个文件 + 预览 / 下载
+  // 文件分享：单个文件 + 预览 / 下载
   if (!data.is_dir && data.file) {
     const f = data.file
-    const previewUrl = api.shareDownloadUrl(data.token, f.path)
-    const canPreview = /^(image|video)/.test(kindOf(f.name, false))
+    const src = api.shareDownloadUrl(data.token, f.path)
+    const isImg = /\.(jpg|jpeg|png|gif|webp|bmp|avif|svg)$/i.test(f.name)
+    const isVid = /\.(mp4|webm|mkv|mov|m4v)$/i.test(f.name)
     return (
-      <div className="mt-6">
-        <div className="cute-border rounded-2xl bg-white p-5">
+      <div className="p-4">
+        <div className="win-panel p-4">
           <div className="flex items-center gap-3">
-            <div className="grid size-12 shrink-0 place-items-center rounded-xl bg-slate-100 text-2xl">
-              {KIND_GLYPH[kindOf(f.name, false)] ?? KIND_GLYPH.file}
+            <div className="icon-disc size-10">
+              <Icon d={fileIconOf(f.name, false)} className={cn('size-5', fileIconTone(f.name, false))} />
             </div>
             <div className="min-w-0 flex-1">
-              <p className="truncate-1 text-sm font-black text-slate-800">{f.name}</p>
-              <p className="mt-0.5 text-[11px] font-medium text-[--color-ink-faint]">
-                {humanSize(f.size)} · {humanDate(f.mtime)}
+              <p className="truncate-1 text-[13px] font-semibold text-[--color-ink]">{f.name}</p>
+              <p className="mt-0.5 text-[11.5px] text-[--color-ink-faint]">
+                {kindLabel(f.name, false)} · {humanSize(f.size)} · {humanDate(f.mtime)}
               </p>
             </div>
           </div>
 
-          {canPreview && (
-            <div className="mt-4 overflow-hidden rounded-xl bg-slate-50">
-              {isVideo(f.name) ? (
-                <video src={previewUrl} controls className="max-h-[60vh] w-full bg-black" />
-              ) : (
-                <img src={previewUrl} alt={f.name} className="max-h-[60vh] w-full object-contain" />
-              )}
+          {isImg && (
+            <div className="mt-3 overflow-hidden rounded border border-[--color-line] bg-[#f7f8fa] p-2">
+              <img src={src} alt={f.name} className="max-h-[55vh] w-full object-contain" />
             </div>
           )}
+          {isVid && (
+            <div className="mt-3 overflow-hidden rounded border border-[--color-line] bg-black">
+              <video src={src} controls className="max-h-[55vh] w-full" />
+            </div>
+          )}
+          {!isImg && !isVid && (
+            <p className="mt-3 text-[12px] text-[--color-ink-soft]">此格式不支持在线预览，可下载到本地查看。</p>
+          )}
 
-          <div className="mt-4 flex gap-2">
-            <Button
-              variant="primary"
-              className="flex-1"
-              onClick={() => void onDownload(f)}
-              icon={<Icon d={ICONS.download} className="size-3.5" />}
-            >
+          <div className="mt-3 flex gap-2">
+            <Button variant="primary" onClick={() => void onDownload(f)} icon={<Icon d={ICONS.download} className="size-3.5" />}>
               下载文件
             </Button>
           </div>
         </div>
-        <p className="mt-3 text-center text-xs font-medium text-slate-400">
+        <p className="mt-2 text-center text-[11.5px] text-[--color-ink-faint]">
           这是一条公开分享链接，任何拿到链接的人都能下载
         </p>
       </div>
     )
   }
 
-  // 目录分享：面包屑 + 列表
+  // 目录分享：面包屑地址栏 + 表格
+  const crumb = buildBreadcrumb(data.path)
+
   return (
-    <div className="mt-4">
-      {/* 面包屑 */}
-      <nav className="mb-3 flex items-center gap-1 overflow-x-auto text-sm" aria-label="分享路径">
-        <button
-          type="button"
-          onClick={() => onOpenDir(data.root_path)}
-          className={cn(
-            'flex shrink-0 items-center gap-1 rounded-full border-2 px-2.5 py-1 font-bold transition-colors',
-            data.path === data.root_path
-              ? 'border-[--color-sky-400] bg-[--color-sky-100] text-[--color-sky-700]'
-              : 'border-transparent text-[--color-ink-soft] hover:border-[--color-sky-200] hover:text-[--color-sky-600]',
-          )}
-        >
-          <Icon d={ICONS.home} className="size-3.5" />
-          {data.root_name || '根目录'}
-        </button>
-        {data.crumbs.map((c) => (
-          <span key={c.path} className="flex min-w-0 shrink-0 items-center gap-1">
-            <span className="text-slate-300" aria-hidden>
-              /
+    <>
+      <div className="win-address">
+        <Icon d={ICONS.folder} className="size-4 shrink-0 text-amber-600" />
+        <div className="win-crumbs !cursor-default">
+          <button type="button" className={cn('win-crumb', data.path === data.root_path && 'is-current')} onClick={() => onOpenDir(data.root_path)}>
+            {data.root_name || '分享根目录'}
+          </button>
+          {crumb.filter((c) => c.path !== data.root_path).map((c) => (
+            <span key={c.path} className="contents">
+              <span className="win-crumb-sep">›</span>
+              <button type="button" className={cn('win-crumb', c.path === data.path && 'is-current')} onClick={() => onOpenDir(c.path)}>
+                {c.name}
+              </button>
             </span>
-            <button
-              type="button"
-              onClick={() => onOpenDir(c.path)}
-              className={cn(
-                'truncate-1 max-w-[10rem] rounded-full border-2 px-2.5 py-1 font-bold transition-colors',
-                c.path === data.path
-                  ? 'border-[--color-sky-400] bg-[--color-sky-100] text-[--color-sky-700]'
-                  : 'border-transparent text-[--color-ink-soft] hover:border-[--color-sky-200] hover:text-[--color-sky-600]',
-              )}
-            >
-              {c.name}
-            </button>
-          </span>
-        ))}
-      </nav>
-
-      <h2 className="mb-3 flex items-center gap-2 px-1 text-xl font-black text-slate-800">
-        <Icon d={ICONS.folder} className="size-5 text-[--color-sky-400]" strokeWidth={2.2} />
-        {data.name || '根目录'}
-      </h2>
-
-      {data.items.length === 0 ? (
-        <div className="cute-border rounded-2xl bg-white p-10 text-center">
-          <div className="mb-2 text-3xl opacity-50">📂</div>
-          <p className="text-sm font-bold text-slate-500">这个文件夹是空的</p>
-        </div>
-      ) : (
-        <ul className="flex flex-col gap-1">
-          {data.items.map((entry) => (
-            <ShareItem
-              key={entry.path}
-              entry={entry}
-              token={data.token}
-              onOpenDir={onOpenDir}
-              onPreview={onPreview}
-              onDownload={onDownload}
-            />
           ))}
-        </ul>
-      )}
-    </div>
-  )
-}
-
-function ShareItem({
-  entry,
-  token,
-  onOpenDir,
-  onPreview,
-  onDownload,
-}: {
-  entry: Entry
-  token: string
-  onOpenDir: (relPath: string) => void
-  onPreview: (entry: Entry) => void
-  onDownload: (entry: Entry) => void
-}) {
-  const kind = kindOf(entry.name, entry.is_dir)
-  const thumb = hasThumb(kind) ? api.shareThumbnailUrl(token, entry.path) : null
-
-  return (
-    <li className="cute-border flex items-center gap-3 rounded-2xl bg-white px-3 py-2.5">
-      <div className="grid size-10 shrink-0 place-items-center overflow-hidden rounded-xl bg-slate-100 text-lg">
-        {thumb ? (
-          <img src={thumb} alt="" className="size-full object-cover" />
-        ) : (
-          <span aria-hidden>{KIND_GLYPH[kind] ?? KIND_GLYPH.file}</span>
-        )}
+        </div>
       </div>
 
-      <button
-        type="button"
-        onClick={() => (entry.is_dir ? onOpenDir(entry.path) : onPreview(entry))}
-        className="min-w-0 flex-1 text-left"
-      >
-        <p className="truncate-1 text-sm font-bold text-[--color-ink]">{entry.name}</p>
-        <p className="mt-0.5 flex items-center gap-2 text-[11px] font-medium text-[--color-ink-faint]">
-          <span className="truncate-1">{humanDate(entry.mtime)}</span>
-          <span aria-hidden>·</span>
-          <span className="shrink-0 tabular-nums">{entry.is_dir ? '文件夹' : entry.size_h}</span>
-        </p>
-      </button>
+      <div className="win-table min-h-0 flex-1 overflow-auto">
+        <div className="win-thead">
+          <div />
+          <div className="win-th !cursor-default">名称</div>
+          <div className="win-th win-hide-md !cursor-default">修改日期</div>
+          <div className="win-th win-hide-md !cursor-default">类型</div>
+          <div className="win-th win-hide-sm !cursor-default justify-end">大小</div>
+          <div className="win-th !cursor-default justify-end">操作</div>
+        </div>
 
-      {!entry.is_dir && (
-        <Button
-          size="sm"
-          variant="primary"
-          onClick={() => void onDownload(entry)}
-          icon={<Icon d={ICONS.download} className="size-3.5" />}
-        >
-          下载
-        </Button>
-      )}
-    </li>
+        {data.items.length === 0 ? (
+          <EmptyState icon={ICONS.folder} title="此文件夹为空" hint="分享者还没有在这里放文件" />
+        ) : (
+          data.items.map((entry) => (
+            <div key={entry.path} className="win-row">
+              <div />
+              <div className="win-td is-name flex min-w-0 items-center gap-2">
+                {hasThumb(entry) ? (
+                  <img src={api.shareThumbnailUrl(data.token, entry.path)} alt="" className="size-5 shrink-0 rounded-sm object-cover" />
+                ) : (
+                  <Icon d={fileIconOf(entry.name, entry.is_dir)} className={cn('size-4 shrink-0', fileIconTone(entry.name, entry.is_dir))} />
+                )}
+                <button
+                  type="button"
+                  onClick={() => (entry.is_dir ? onOpenDir(entry.path) : onPreview(entry))}
+                  className="min-w-0 truncate-1 text-left text-[12.5px] text-[--color-ink] hover:underline"
+                  title={entry.name}
+                >
+                  {entry.name}
+                </button>
+              </div>
+              <div className="win-td win-hide-md">{humanDate(entry.mtime)}</div>
+              <div className="win-td win-hide-md">{kindLabel(entry.name, entry.is_dir)}</div>
+              <div className="win-td win-hide-sm is-num">{entry.is_dir ? '' : entry.size_h}</div>
+              <div className="win-td is-actions">
+                {!entry.is_dir && (
+                  <>
+                    <button type="button" className="win-row-btn" title="预览" aria-label="预览" onClick={() => onPreview(entry)}>
+                      <Icon d={ICONS.eye} className="size-3.5" />
+                    </button>
+                    <button type="button" className="win-row-btn" title="下载" aria-label="下载" onClick={() => void onDownload(entry)}>
+                      <Icon d={ICONS.download} className="size-3.5" />
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </>
   )
 }
 
-function hasThumb(kind: string): boolean {
-  return kind === 'image' || kind === 'video'
+function hasThumb(entry: Entry): boolean {
+  return /\.(jpg|jpeg|png|gif|webp|bmp|avif|mp4|webm|mkv|mov|m4v)$/i.test(entry.name)
 }
 
 /**
- * 分享内的文件预览弹层。
- *
- * 点文件名不再直接下载，而是先在这里预览：
- *   - 图片 / 视频：浏览器内联展示
- *   - 其他类型：提示暂不支持在线预览，并提供下载入口
- * 真正的下载交给显式的「下载文件」按钮，避免「一进分享页就全下下来」。
+ * 分享内的文件预览：点文件名先预览，真正的下载交给显式按钮。
  */
 function SharePreview({
-  entry,
-  token,
-  onClose,
-  onDownload,
+  entry, token, onClose, onDownload,
 }: {
   entry: Entry
   token: string
-  onClose: () => void
-  onDownload: (entry: Entry) => void
+  onClose(): void
+  onDownload(entry: Entry): void
 }) {
-  const kind = kindOf(entry.name, false)
   const src = api.shareDownloadUrl(token, entry.path)
+  const isImg = /\.(jpg|jpeg|png|gif|webp|bmp|avif|svg)$/i.test(entry.name)
+  const isVid = /\.(mp4|webm|mkv|mov|m4v)$/i.test(entry.name)
 
   return (
-    <div
-      className="fixed inset-0 z-[80] flex items-end justify-center bg-black/60 p-3 backdrop-blur-sm sm:items-center"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose()
-      }}
-    >
-      <div className="cute-border w-full max-w-2xl rounded-2xl bg-white p-4 shadow-2xl">
-        <div className="mb-3 flex items-center gap-3">
-          <div className="min-w-0 flex-1">
-            <p className="truncate-1 text-sm font-black text-slate-800">{entry.name}</p>
-            <p className="mt-0.5 text-[11px] font-medium text-[--color-ink-faint]">
-              {humanSize(entry.size)} · {humanDate(entry.mtime)}
-            </p>
+    <div className="fixed inset-0 z-[80] flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-slate-900/40" onClick={onClose} aria-hidden />
+      <div className="relative flex w-full max-w-3xl flex-col border border-[--color-line-strong] bg-white shadow-[--shadow-cute-lg]">
+        <header className="flex shrink-0 items-center justify-between gap-3 border-b border-[--color-line] px-4 py-2.5">
+          <div className="min-w-0">
+            <p className="truncate-1 text-[13px] font-semibold text-[--color-ink]">{entry.name}</p>
+            <p className="text-[11px] text-[--color-ink-faint]">{kindLabel(entry.name, false)} · {humanSize(entry.size)} · {humanDate(entry.mtime)}</p>
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="ml-auto grid size-8 shrink-0 place-items-center rounded-full text-slate-400 hover:bg-slate-100 hover:text-slate-600"
-            aria-label="关闭"
-          >
-            <Icon d={ICONS.close} className="size-4" />
+          <button type="button" onClick={onClose} className="win-nav-btn" aria-label="关闭">
+            <Icon d={ICONS.close} className="size-3.5" />
           </button>
-        </div>
+        </header>
 
-        <div className="overflow-hidden rounded-xl bg-slate-50">
-          {kind === 'image' ? (
-            <img src={src} alt={entry.name} className="max-h-[60vh] w-full bg-[#0b0b0c] object-contain" />
-          ) : kind === 'video' ? (
-            <video src={src} controls className="max-h-[60vh] w-full bg-black" />
+        <div className="min-h-0 overflow-auto bg-[#f7f8fa] p-3">
+          {isImg ? (
+            <img src={src} alt={entry.name} className="mx-auto max-h-[60vh] object-contain" />
+          ) : isVid ? (
+            <video src={src} controls className="mx-auto max-h-[60vh] w-full bg-black" />
           ) : (
-            <div className="grid place-items-center p-10 text-center">
-              <div className="mb-2 text-4xl opacity-50">{KIND_GLYPH[kind] ?? KIND_GLYPH.file}</div>
-              <p className="text-sm font-bold text-slate-500">该类型暂不支持在线预览</p>
-              <p className="mt-1 text-xs font-medium text-slate-400">点「下载文件」保存到本地</p>
+            <div className="py-14 text-center">
+              <Icon d={fileIconOf(entry.name, false)} className="mx-auto size-10 text-[--color-ink-faint]" />
+              <p className="mt-3 text-[12.5px] font-semibold text-[--color-ink]">此格式不支持在线预览</p>
+              <p className="mt-1 text-[11.5px] text-[--color-ink-soft]">点「下载文件」保存到本地查看</p>
             </div>
           )}
         </div>
 
-        <div className="mt-3 flex gap-2">
-          <Button
-            variant="primary"
-            className="flex-1"
-            onClick={() => void onDownload(entry)}
-            icon={<Icon d={ICONS.download} className="size-3.5" />}
-          >
+        <footer className="flex shrink-0 items-center justify-end gap-2 border-t border-[--color-line] bg-[--color-surface-alt] px-4 py-2.5">
+          <Button onClick={onClose}>关闭</Button>
+          <Button variant="primary" onClick={() => void onDownload(entry)} icon={<Icon d={ICONS.download} className="size-3.5" />}>
             下载文件
           </Button>
-          <Button onClick={onClose}>关闭</Button>
-        </div>
+        </footer>
       </div>
     </div>
   )

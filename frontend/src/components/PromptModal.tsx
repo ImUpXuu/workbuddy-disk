@@ -91,7 +91,7 @@ export default function PromptModal({
             setErr('')
           }}
         />
-        {err && <p className="mt-1.5 text-xs font-bold text-rose-600">{err}</p>}
+        {err && <p className="mt-1.5 text-[11.5px] font-semibold text-[--color-danger]">{err}</p>}
         {/* 供回车提交，不可见 */}
         <button type="submit" className="hidden" tabIndex={-1} aria-hidden />
       </form>

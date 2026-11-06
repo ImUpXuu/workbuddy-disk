@@ -1,52 +1,54 @@
 @import "tailwindcss";
 
 /* ═══════════════════════════════════════════════════════════════════
-   设计令牌 —— 对齐 life.upxuu.com 的「笔绘 / 贴纸」风格
+   设计令牌 —— Windows 文件资源管理器式「实用优先」
 
-   核心特征（从参考站点 CSS 提取）：
-     1. 硬阴影     box-shadow 无模糊、纯色偏移 → 贴纸浮起感
-     2. 描边       2px 实线边框，而不是无边框玻璃
-     3. 大圆角     卡片 1.5rem，按钮全圆
-     4. 位移反馈   hover 向左上浮起、active 向右下压平
-     5. 圆点阵底   30px 网格、实心圆点（无透明度）
-     6. 正文 #333  系统字体栈，不引外部字体
+   原则：UI 是为操作服务的，不是装饰。
+     1. 中性配色：浅灰工作台 + 白色内容区 + 1px 细边框，不抢内容注意力
+     2. 小圆角：4~6px，够识别即可，不做贴纸/胶囊
+     3. 无硬阴影：层级靠边框与底色区分，不靠浮起动画
+     4. 紧凑：行高 32~36px，一屏能看更多文件；表格多列把信息摊开
+     5. 操作常驻：不依赖 hover / 右键才能找到功能，触屏也能用
+     6. 状态可见：选中态、排序态、焦点态都用明确的高对比色块
    ═══════════════════════════════════════════════════════════════════ */
 
 @theme {
-  /* 字体：与参考站点一致，纯系统栈（不引入外部字体，避免额外请求与闪烁） */
-  --font-sans: ui-sans-serif, system-ui, sans-serif, "PingFang SC",
-    "Microsoft YaHei", "Apple Color Emoji", "Segoe UI Emoji";
+  --font-sans: "Segoe UI Variable", "Segoe UI", system-ui, -apple-system,
+    "PingFang SC", "Microsoft YaHei", sans-serif;
 
-  /* 主色板：sky 系 */
-  --color-sky-50: #f0f9ff;
-  --color-sky-100: #e0f2fe;
-  --color-sky-200: #bae6fd;
-  --color-sky-300: #7dd3fc;
-  --color-sky-400: #38bdf8;   /* 描边与阴影主色（用得最多） */
-  --color-sky-500: #0ea5e9;
-  --color-sky-600: #0284c7;   /* 标题 / 强调文字 */
-  --color-sky-700: #0369a1;
+  /* 保留 sky-* 变量名（现有组件大量引用），但重定义为 Windows 蓝灰阶。
+     这样即使有遗漏的内联类名，也不会漏出旧糖果色。 */
+  --color-sky-50: #f7f9fc;
+  --color-sky-100: #eef3f9;
+  --color-sky-200: #dce6f2;
+  --color-sky-300: #b9cde3;
+  --color-sky-400: #8fb4d9;
+  --color-sky-500: #4a86c5;
+  --color-sky-600: #0f6cbd;   /* Windows 强调蓝：链接 / 主按钮 / 选中 */
+  --color-sky-700: #0a4f96;
 
-  /* 页面 */
-  --color-canvas: #f0f8ff;
-  --color-ink: #333333;        /* 正文色，与参考站点一致 */
-  --color-ink-soft: #64748b;   /* slate-500 */
-  --color-ink-faint: #94a3b8;  /* slate-400 */
+  /* 页面与文字 */
+  --color-canvas: #f3f4f6;
+  --color-surface: #ffffff;
+  --color-surface-alt: #fafbfc;
+  --color-line: #e1e4e8;
+  --color-line-strong: #c9cfd6;
+  --color-ink: #1b1b1f;
+  --color-ink-soft: #5b6470;
+  --color-ink-faint: #868e99;
 
-  /* 圆角 */
-  --radius-cute: 1.5rem;
+  --color-accent: #0f6cbd;
+  --color-accent-hover: #0b5aa3;
+  --color-accent-soft: #e8f1fb;
+  --color-accent-line: #b9d6f2;
+  --color-danger: #c42b1c;
+  --color-danger-soft: #fdf3f2;
+  --color-success: #107c10;
 
-  /* 硬阴影：无模糊、纯色偏移 */
-  --shadow-cute: 4px 4px 0 var(--color-sky-400);
-  --shadow-cute-lg: 6px 6px 0 var(--color-sky-400);
-  --shadow-cute-sm: 2px 2px 0 var(--color-sky-400);
-
-  /* 笔绘风的补充色：黄 / 绿 / 蓝，用于文件类型区分与高亮。
-     参考站点里 #fde047 / #86efac / #93c5fd 出现频率仅次于主色。 */
-  --color-cute-yellow: #fde047;
-  --color-cute-green: #86efac;
-  --color-cute-blue: #93c5fd;
-  --color-cute-red: #fca5a5;
+  --radius-cute: 6px;
+  --shadow-cute: 0 1px 2px rgb(0 0 0 / 0.06);
+  --shadow-cute-lg: 0 8px 24px rgb(0 0 0 / 0.14);
+  --shadow-cute-sm: 0 1px 2px rgb(0 0 0 / 0.06);
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -63,42 +65,44 @@
     margin: 0;
     min-height: 100dvh;
     font-family: var(--font-sans);
+    font-size: 13px;
     color: var(--color-ink);
     background-color: var(--color-canvas);
-
-    /* 圆点阵：与参考站点完全一致的实心圆点 + 30px 网格 */
-    background-image: radial-gradient(#bae6fd 2px, transparent 2px);
-    background-size: 30px 30px;
   }
 
-  /* 焦点可见性 */
   :focus-visible {
-    outline: 2px solid var(--color-sky-600);
-    outline-offset: 3px;
+    outline: 2px solid var(--color-accent);
+    outline-offset: -1px;
   }
 
   ::-webkit-scrollbar {
-    width: 10px;
-    height: 10px;
+    width: 12px;
+    height: 12px;
   }
   ::-webkit-scrollbar-track {
     background: transparent;
   }
   ::-webkit-scrollbar-thumb {
-    background: var(--color-sky-200);
-    border-radius: 9999px;
+    background: #c9cfd6;
     border: 3px solid transparent;
     background-clip: content-box;
+    border-radius: 8px;
   }
   ::-webkit-scrollbar-thumb:hover {
-    background: var(--color-sky-300);
+    background: #a9b2bd;
     background-clip: content-box;
   }
 
+  /* 复选框统一成方形、Windows 蓝勾选 */
+  input[type="checkbox"] {
+    accent-color: var(--color-accent);
+    width: 15px;
+    height: 15px;
+    cursor: pointer;
+  }
+
   @media (prefers-reduced-motion: reduce) {
-    *,
-    *::before,
-    *::after {
+    *, *::before, *::after {
       animation-duration: 0.01ms !important;
       animation-iteration-count: 1 !important;
       transition-duration: 0.01ms !important;
@@ -107,169 +111,475 @@
 }
 
 /* ═══════════════════════════════════════════════════════════════════
-   笔绘风格组件
-   与参考站点同名同实现，方便对照维护。
+   组件
+   保留旧类名作为别名（现有 JSX 直接可用），但语义全部换成中性扁平。
    ═══════════════════════════════════════════════════════════════════ */
 
 @layer components {
-  /* ── 卡片：白底 + 2px 描边 + 4px 硬阴影 ──
-     与参考站点 .cute-border 逐条对齐。 */
-  .cute-border {
-    background-color: #fff;
-    border: 2px solid var(--color-sky-400);
+  /* 卡片 / 面板：白底 + 1px 细边框 + 小圆角，无硬阴影 */
+  .cute-border,
+  .win-panel {
+    background-color: var(--color-surface);
+    border: 1px solid var(--color-line);
     border-radius: var(--radius-cute);
-    box-shadow: 4px 4px 0 var(--color-sky-400);
+    box-shadow: none;
   }
 
-  /* 可交互卡片：悬停向左上浮起、阴影变大。
-     transition 与参考站点一致用 .2s。 */
   .cute-border-hover {
-    transition: transform 0.2s, box-shadow 0.2s;
-  }
-  @media (hover: hover) {
-    .cute-border-hover:hover {
-      transform: translate(-2px, -2px);
-      box-shadow: 6px 6px 0 var(--color-sky-400);
-    }
+    transition: border-color 0.12s, background-color 0.12s;
   }
 
-  /* ── 按钮：全圆角 + 2px 描边 + 2px 硬阴影 ──
-     transition 用 .1s（比卡片更快，按下反馈要跟手）。 */
-  .cute-button {
-    background-color: #fff;
-    border: 2px solid var(--color-sky-400);
-    border-radius: 9999px;
-    box-shadow: 2px 2px 0 var(--color-sky-400);
-    transition: transform 0.1s, box-shadow 0.1s, background-color 0.15s;
-  }
-
-  /* 按钮作为 <a> 渲染时（例如「退出」改成链接）补齐布局样式 */
-  a.cute-button {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.5rem;
-    font-weight: 700;
-    text-decoration: none;
-  }
-
+  /* ── 按钮：扁平、方形小圆角、有明确 hover / active ── */
+  .cute-button,
   .btn {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    gap: 0.375rem;
-    font-weight: 700;
-    font-size: 0.875rem;
+    gap: 6px;
+    font-family: inherit;
+    font-weight: 500;
+    font-size: 12.5px;
     line-height: 1;
-    padding: 0.5rem 1rem;
+    padding: 7px 12px;
+    min-height: 30px;
     cursor: pointer;
     white-space: nowrap;
     user-select: none;
-    /* 默认套用笔绘按钮外观 */
-    background-color: #fff;
-    border: 2px solid var(--color-sky-400);
-    border-radius: 9999px;
-    box-shadow: 2px 2px 0 var(--color-sky-400);
-    transition: transform 0.1s, box-shadow 0.1s, background-color 0.15s, color 0.15s;
+    background-color: var(--color-surface);
+    color: var(--color-ink);
+    border: 1px solid var(--color-line-strong);
+    border-radius: 4px;
+    box-shadow: none;
+    transition: background-color 0.12s, border-color 0.12s, color 0.12s;
   }
 
-  /* 按下：影子消失 + 位移，模拟按扁 */
+  a.cute-button {
+    display: inline-flex;
+    text-decoration: none;
+  }
+
+  .btn:hover:not(:disabled) {
+    background-color: #f0f2f5;
+    border-color: #aab3bd;
+  }
   .btn:active:not(:disabled) {
-    transform: translate(2px, 2px);
-    box-shadow: 0 0 0 var(--color-sky-400);
+    background-color: #e5e9ee;
   }
   .btn:disabled {
     opacity: 0.45;
     cursor: not-allowed;
-    box-shadow: 2px 2px 0 rgb(186 230 253);
-    border-color: rgb(186 230 253);
   }
 
-  /* 悬停：向左上浮起一点，与卡片的 hover 语言保持一致。
-     仅在有指针设备时启用，避免触屏上「悬停态卡住」。 */
-  @media (hover: hover) {
-    .btn:hover:not(:disabled) {
-      transform: translate(-1px, -1px);
-      box-shadow: 3px 3px 0 var(--color-sky-400);
-    }
-  }
-
-  /* 主按钮：实心天蓝 */
   .btn-primary {
-    background-color: var(--color-sky-400);
+    background-color: var(--color-accent);
     color: #fff;
+    border-color: var(--color-accent);
   }
-  @media (hover: hover) {
-    .btn-primary:hover:not(:disabled) {
-      background-color: var(--color-sky-500);
-    }
+  .btn-primary:hover:not(:disabled) {
+    background-color: var(--color-accent-hover);
+    border-color: var(--color-accent-hover);
+  }
+  .btn-primary:active:not(:disabled) {
+    background-color: #084681;
   }
 
-  /* 次按钮：白底蓝字 */
   .btn-ghost {
-    background-color: #fff;
-    color: var(--color-sky-600);
+    background-color: transparent;
+    border-color: transparent;
+    color: var(--color-ink);
   }
-  @media (hover: hover) {
-    .btn-ghost:hover:not(:disabled) {
-      background-color: var(--color-sky-50);
-    }
+  .btn-ghost:hover:not(:disabled) {
+    background-color: #eceff3;
+    border-color: transparent;
   }
 
-  /* 危险按钮：红描边 */
   .btn-danger {
-    background-color: #fff;
-    color: #dc2626;
-    border-color: #fca5a5;
-    box-shadow: 2px 2px 0 #fca5a5;
+    background-color: var(--color-surface);
+    color: var(--color-danger);
+    border-color: #e8b3ad;
   }
-  .btn-danger:active:not(:disabled) {
-    box-shadow: 0 0 0 #fca5a5;
-  }
-  @media (hover: hover) {
-    .btn-danger:hover:not(:disabled) {
-      background-color: #fef2f2;
-    }
+  .btn-danger:hover:not(:disabled) {
+    background-color: var(--color-danger-soft);
+    border-color: #d99890;
   }
 
-  /* ── 输入框：描边 + 内嵌感（无阴影，聚焦时描边加深） ── */
+  /* ── 输入框：1px 边框，聚焦加深蓝边 ── */
   .field {
     width: 100%;
-    border-radius: 0.875rem;
-    border: 2px solid var(--color-sky-200);
-    background-color: #fff;
-    padding: 0.5rem 0.875rem;
-    font-size: 0.875rem;
+    border-radius: 4px;
+    border: 1px solid var(--color-line-strong);
+    background-color: var(--color-surface);
+    padding: 6px 9px;
+    font-family: inherit;
+    font-size: 12.5px;
     color: var(--color-ink);
-    transition: border-color 0.15s;
+    transition: border-color 0.12s, box-shadow 0.12s;
   }
   .field::placeholder {
     color: var(--color-ink-faint);
   }
   .field:focus {
     outline: none;
-    border-color: var(--color-sky-400);
+    border-color: var(--color-accent);
+    box-shadow: 0 0 0 2px rgb(15 108 189 / 0.15);
   }
 
-  /* ── 小标签 ── */
+  /* ── 小标签：不再是胶囊 ── */
   .chip {
     display: inline-flex;
     align-items: center;
-    gap: 0.25rem;
-    border-radius: 9999px;
-    padding: 0.125rem 0.625rem;
-    font-size: 0.6875rem;
-    font-weight: 700;
+    gap: 4px;
+    border-radius: 3px;
+    padding: 1px 6px;
+    font-size: 11px;
+    font-weight: 500;
     line-height: 1.6;
   }
 
-  /* ── 图标底座：圆形 + 描边 ── */
+  /* ── 图标底座：方形小圆角 ── */
   .icon-disc {
     display: grid;
     place-items: center;
-    border-radius: 9999px;
+    border-radius: 4px;
     background-color: var(--color-sky-100);
-    border: 2px solid var(--color-sky-200);
+    border: 1px solid var(--color-line);
   }
+
+  /* ── 命令栏（工具栏）：一行常驻操作，按钮带文字 ── */
+  .win-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding: 5px 8px;
+    background-color: var(--color-surface);
+    border-bottom: 1px solid var(--color-line);
+    flex-wrap: wrap;
+  }
+
+  /* 工具栏按钮：无边框、图标+文字，hover 才显底色 */
+  .win-tool {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 9px;
+    min-height: 30px;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--color-ink);
+    font-family: inherit;
+    font-size: 12.5px;
+    font-weight: 500;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background-color 0.12s, border-color 0.12s;
+  }
+  .win-tool:hover:not(:disabled) {
+    background-color: #eef1f5;
+    border-color: var(--color-line);
+  }
+  .win-tool:active:not(:disabled) {
+    background-color: #e2e7ed;
+  }
+  .win-tool:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+  .win-tool.is-active {
+    background-color: var(--color-accent-soft);
+    border-color: var(--color-accent-line);
+    color: var(--color-accent);
+  }
+  .win-tool.is-danger:hover:not(:disabled) {
+    background-color: var(--color-danger-soft);
+    border-color: #e8b3ad;
+    color: var(--color-danger);
+  }
+
+  .win-tool-sep {
+    width: 1px;
+    height: 20px;
+    background-color: var(--color-line);
+    margin: 0 5px;
+    flex: none;
+  }
+
+  /* ── 地址栏 / 面包屑 ── */
+  .win-address {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    height: 34px;
+    padding: 0 8px;
+    background-color: var(--color-surface);
+    border-bottom: 1px solid var(--color-line);
+  }
+  .win-nav-btn {
+    display: grid;
+    place-items: center;
+    width: 28px;
+    height: 26px;
+    flex: none;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--color-ink-soft);
+    cursor: pointer;
+  }
+  .win-nav-btn:hover:not(:disabled) {
+    background-color: #eceff3;
+    color: var(--color-ink);
+  }
+  .win-nav-btn:disabled {
+    opacity: 0.32;
+    cursor: default;
+  }
+  .win-crumbs {
+    display: flex;
+    align-items: center;
+    min-width: 0;
+    flex: 1;
+    height: 26px;
+    padding: 0 4px;
+    border: 1px solid var(--color-line-strong);
+    border-radius: 4px;
+    background-color: var(--color-surface);
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+  }
+  .win-crumbs::-webkit-scrollbar { display: none; }
+  .win-crumb {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    flex: none;
+    padding: 2px 6px;
+    border: none;
+    border-radius: 3px;
+    background: transparent;
+    color: var(--color-ink-soft);
+    font-family: inherit;
+    font-size: 12.5px;
+    cursor: pointer;
+  }
+  .win-crumb:hover { background-color: #eceff3; color: var(--color-ink); }
+  .win-crumb.is-current { color: var(--color-ink); font-weight: 600; }
+  .win-crumb-sep { color: #a9b2bd; flex: none; font-size: 12px; }
+  .win-path-input {
+    width: 100%;
+    height: 100%;
+    border: none;
+    outline: none;
+    padding: 0 4px;
+    font-family: inherit;
+    font-size: 12.5px;
+    color: var(--color-ink);
+    background: transparent;
+  }
+
+  /* ── 表格：列头 + 行 ── */
+  .win-table {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    flex: 1;
+    background-color: var(--color-surface);
+  }
+  .win-thead,
+  .win-row {
+    display: grid;
+    /* 复选框 | 名称 | 修改日期 | 类型 | 大小 | 操作 */
+    grid-template-columns: 34px minmax(0, 1fr) 148px 116px 92px 152px;
+    align-items: center;
+  }
+  .win-thead {
+    height: 30px;
+    flex: none;
+    background-color: var(--color-surface-alt);
+    border-bottom: 1px solid var(--color-line);
+    position: sticky;
+    top: 0;
+    z-index: 2;
+  }
+  .win-th {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    height: 100%;
+    padding: 0 8px;
+    border: none;
+    border-right: 1px solid var(--color-line);
+    background: transparent;
+    color: var(--color-ink-soft);
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    text-align: left;
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+    overflow: hidden;
+  }
+  .win-th:hover { background-color: #eceff3; color: var(--color-ink); }
+  .win-th.is-sorted { color: var(--color-accent); }
+  .win-th:last-child { border-right: none; }
+
+  .win-row {
+    min-height: 34px;
+    border-bottom: 1px solid #f0f2f4;
+    position: relative;
+    transition: background-color 0.08s;
+  }
+  .win-row:hover { background-color: #f5f8fc; }
+  .win-row.is-selected { background-color: var(--color-accent-soft); }
+  .win-row.is-selected:hover { background-color: #dcebf9; }
+  .win-row.is-selected::before {
+    content: "";
+    position: absolute;
+    left: 0; top: 0; bottom: 0;
+    width: 2px;
+    background-color: var(--color-accent);
+  }
+  .win-td {
+    min-width: 0;
+    padding: 0 8px;
+    font-size: 12.5px;
+    color: var(--color-ink-soft);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .win-td.is-name { color: var(--color-ink); }
+  .win-td.is-num { text-align: right; font-variant-numeric: tabular-nums; }
+  .win-td.is-actions { display: flex; align-items: center; justify-content: flex-end; gap: 1px; }
+
+  /* 行内小图标按钮：常驻，不靠 hover 出现 */
+  .win-row-btn {
+    display: grid;
+    place-items: center;
+    width: 25px;
+    height: 25px;
+    flex: none;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--color-ink-soft);
+    cursor: pointer;
+  }
+  .win-row-btn:hover:not(:disabled) {
+    background-color: #e6ebf1;
+    border-color: var(--color-line);
+    color: var(--color-ink);
+  }
+  .win-row-btn.is-danger:hover:not(:disabled) {
+    background-color: var(--color-danger-soft);
+    border-color: #e8b3ad;
+    color: var(--color-danger);
+  }
+  .win-row-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+
+  /* ── 状态栏 ── */
+  .win-statusbar {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    height: 28px;
+    flex: none;
+    padding: 0 12px;
+    background-color: var(--color-surface);
+    border-top: 1px solid var(--color-line);
+    color: var(--color-ink-soft);
+    font-size: 11.5px;
+    white-space: nowrap;
+    overflow-x: auto;
+  }
+  .win-statusbar .sep { color: var(--color-line-strong); }
+
+  /* ── 右键 / 更多 菜单 ── */
+  .win-menu {
+    position: fixed;
+    z-index: 90;
+    min-width: 176px;
+    padding: 4px;
+    background-color: var(--color-surface);
+    border: 1px solid var(--color-line-strong);
+    border-radius: 6px;
+    box-shadow: var(--shadow-cute-lg);
+  }
+  .win-menu-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 7px 10px;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--color-ink);
+    font-family: inherit;
+    font-size: 12.5px;
+    text-align: left;
+    cursor: pointer;
+  }
+  .win-menu-item:hover:not(:disabled) { background-color: #eef1f5; }
+  .win-menu-item.is-danger { color: var(--color-danger); }
+  .win-menu-item.is-danger:hover:not(:disabled) { background-color: var(--color-danger-soft); }
+  .win-menu-item:disabled { opacity: 0.4; cursor: not-allowed; }
+  .win-menu-item .kbd {
+    margin-left: auto;
+    color: var(--color-ink-faint);
+    font-size: 11px;
+  }
+  .win-menu-sep { height: 1px; margin: 4px 6px; background-color: var(--color-line); }
+
+  /* ── 侧边导航 ── */
+  .win-sidebar {
+    width: 200px;
+    flex: none;
+    background-color: #f7f8fa;
+    border-right: 1px solid var(--color-line);
+    overflow-y: auto;
+    padding: 10px 8px;
+  }
+  .win-nav-group-title {
+    padding: 10px 10px 5px;
+    color: var(--color-ink-faint);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+  }
+  .win-nav-item {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    width: 100%;
+    padding: 7px 10px;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--color-ink);
+    font-family: inherit;
+    font-size: 12.5px;
+    text-align: left;
+    cursor: pointer;
+  }
+  .win-nav-item:hover { background-color: #e9edf2; }
+  .win-nav-item.is-active {
+    background-color: var(--color-accent-soft);
+    color: var(--color-accent);
+    font-weight: 600;
+  }
+  .win-nav-item.is-active::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    width: 3px;
+    height: 18px;
+    background-color: var(--color-accent);
+    border-radius: 2px;
+  }
+  .win-nav-item { position: relative; }
 }
 
 @layer utilities {
@@ -278,57 +588,52 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-
-  /* 多行截断 */
   .line-clamp-2 {
     display: -webkit-box;
     -webkit-line-clamp: 2;
     -webkit-box-orient: vertical;
     overflow: hidden;
   }
-
-  @keyframes skeleton-pulse {
-    0%, 100% { opacity: 0.5; }
-    50% { opacity: 0.85; }
-  }
   .skeleton {
-    background: var(--color-sky-100);
-    border-radius: 0.5rem;
+    background: #e8ebef;
+    border-radius: 3px;
     animation: skeleton-pulse 1.6s ease-in-out infinite;
   }
+  @keyframes skeleton-pulse {
+    0%, 100% { opacity: 0.5; }
+    50% { opacity: 0.9; }
+  }
 }
 
-/* ═══════════════════════════════════════════════════════════════════
-   动画
-   ═══════════════════════════════════════════════════════════════════ */
-
-@keyframes fade-in {
-  from { opacity: 0; }
-  to { opacity: 1; }
+/* ── 响应式：窄屏减列，但操作按钮始终常驻 ── */
+@media (max-width: 900px) {
+  .win-thead, .win-row {
+    grid-template-columns: 30px minmax(0, 1fr) 84px 128px;
+  }
+  /* 隐藏「修改日期」「类型」列：第 3、4 列 */
+  .win-hide-md { display: none; }
+}
+@media (max-width: 600px) {
+  /* 移动端不显示列表表头：手机上无列标题意义，且避免表头排序按钮
+     盖住行的触摸区域（实测长按会被表头吞掉） */
+  .win-thead { display: none; }
+  .win-thead, .win-row {
+    grid-template-columns: 28px minmax(0, 1fr) auto;
+  }
+  .win-hide-sm { display: none; }
+  /* 操作列按内容撑开，5 个常驻图标按钮完整显示、不裁剪 */
+  .win-td.is-actions { flex-wrap: nowrap; }
 }
 
+@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
 @keyframes toast-in {
-  from { opacity: 0; transform: translateY(-8px) scale(0.97); }
-  to { opacity: 1; transform: translateY(0) scale(1); }
+  from { opacity: 0; transform: translateY(-6px); }
+  to { opacity: 1; transform: translateY(0); }
 }
-
 @keyframes modal-in {
-  from { opacity: 0; transform: translateY(8px) scale(0.98); }
-  to { opacity: 1; transform: translateY(0) scale(1); }
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
 }
-
-@keyframes pop-in {
-  0% { opacity: 0; transform: scale(0.9); }
-  100% { opacity: 1; transform: scale(1); }
-}
-
-/* 底部抽屉：从屏幕下沿滑入。
-   位移用百分比而不是固定 px —— 抽屉高度随条目数变化，
-   固定值在小抽屉上会「滑过头」，视觉上是先冲出一截再弹回。
-
-   ⚠️ 用 translateY(100%) 而不是 translateY(120%)：前者正好是自身高度，
-      配合父级 overflow-hidden 不会露出半截；后者在低端机上因
-      合成层裁剪时机不同，偶尔能瞥见一条边缘。 */
 @keyframes sheet-up {
   from { transform: translateY(100%); }
   to { transform: translateY(0); }

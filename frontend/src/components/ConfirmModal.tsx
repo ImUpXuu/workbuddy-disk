@@ -55,16 +55,16 @@ export default function ConfirmModal({
     >
       <div className="flex items-start gap-3">
         {danger && (
-          <span className="mt-0.5 grid size-9 shrink-0 place-items-center rounded-xl bg-rose-100 text-rose-600">
-            <Icon d={ICONS.trash} className="size-4.5" />
+          <span className="mt-0.5 grid size-8 shrink-0 place-items-center rounded border border-[#e8b3ad] bg-[--color-danger-soft] text-[--color-danger]">
+            <Icon d={ICONS.trash} className="size-4" />
           </span>
         )}
         <div className="min-w-0 flex-1">
-          <p className="text-sm leading-relaxed font-bold break-words text-[--color-ink]">
+          <p className="text-[12.5px] leading-relaxed font-semibold break-words text-[--color-ink]">
             {message}
           </p>
           {detail && (
-            <p className="mt-1.5 text-xs leading-relaxed text-[--color-ink-soft]">{detail}</p>
+            <p className="mt-1.5 text-[11.5px] leading-relaxed text-[--color-ink-soft]">{detail}</p>
           )}
         </div>
       </div>

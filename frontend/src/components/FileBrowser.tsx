@@ -1,62 +1,59 @@
 /**
- * 文件浏览器主体。
+ * 文件浏览器主体 —— Windows 文件资源管理器式「详细信息」视图。
  *
- * 职责：
- *   - 目录导航（面包屑 + 返回上级）
- *   - 列表渲染、排序、搜索过滤
- *   - 多选与批量删除
- *   - 调用写操作（重命名 / 删除 / 新建文件夹）
+ * 结构自上而下：
+ *   命令栏   常驻操作（新建 / 上传 / 刷新 / 全选 / 下载 / 删除 / 分享 / 搜索）
+ *   地址栏   后退 / 前进 / 上一级 / 刷新 + 可编辑路径（点击空白处切输入）
+ *   列表     点列头排序（名称 / 修改日期 / 类型 / 大小）
+ *   状态栏   项目数 / 选中数 / 总大小 / 当前路径
  *
- * 目录状态不提升到 Context —— 只有这个页面用得到，
- * 放在局部 state 里更简单，也避免全局重渲染。
+ * 交互约定（两端一致，不依赖悬停 / 右键才能找到功能）：
+ *   - 单击名称 → 进入目录 / 预览文件；点复选框或行空白 → 选中
+ *   - Ctrl + 单击 → 切换单项；Shift + 单击 → 范围选择；Ctrl+A → 全选
+ *   - 右键 → 上下文菜单（桌面增强，所有操作在命令栏/行内按钮里也有）
+ *   - 移动端长按 → 底部抽屉
+ *   - 快捷键：Backspace 上级、Delete 删除、F2 重命名、Esc 清空选择
+ *
+ * 目录状态不提升到 Context —— 只有这个页面用得到。
  */
 
 import {
-  forwardRef,
-  useCallback,
-  useEffect,
-  useImperativeHandle,
-  useMemo,
-  useRef,
-  useState,
+  forwardRef, useCallback, useEffect, useImperativeHandle,
+  useMemo, useRef, useState,
 } from 'react'
 import { api, ApiError } from '../api/client'
 import type { Entry } from '../types/api'
 import { useToast } from '../context/ToastContext'
-import { buildBreadcrumb, cn, humanSize, parentPath, splitPath } from '../lib/utils'
-import { navigate, parseHash, syncDiskPath } from '../lib/router'
+import {
+  buildBreadcrumb, cn, humanSize, kindLabel, parentPath, splitPath,
+} from '../lib/utils'
+import { parseHash, syncDiskPath } from '../lib/router'
 import FileRow from './FileRow'
 import PreviewModal from './PreviewModal'
 import PromptModal from './PromptModal'
 import ConfirmModal from './ConfirmModal'
 import ShareModal from './ShareModal'
 import {
-  ActionSheet,
-  Button,
-  EmptyState,
-  Icon,
-  ICONS,
-  SkeletonRows,
-  type SheetItem,
+  ActionSheet, Button, ContextMenu, EmptyState, Icon, ICONS,
+  SkeletonRows, ToolButton, type MenuItem, type SheetItem,
 } from './ui'
 
-type SortKey = 'name' | 'size' | 'mtime'
+type SortKey = 'name' | 'mtime' | 'type' | 'size'
 
 interface Props {
-  /** 目录变化时通知外部（用于上传目标、统计等） */
   onPathChange?(path: string): void
-  /** 供父组件触发上传文件选择 */
   onRequestUpload?(): void
-  /** 上传任务是否进行中（用于禁用删除等） */
   uploading?: boolean
 }
 
-/** 暴露给父组件的方法 */
 export interface FileBrowserHandle {
-  /** 静默重新拉取当前目录（不闪骨架屏），上传完成后调用 */
   reload(): void
-  /** 取当前所在目录（拖拽上传要拿最新值） */
   currentPath(): string
+}
+
+/** 供父组件读取当前路径段（面包屑展示用） */
+export function usePathSegments(path: string) {
+  return useMemo(() => splitPath(path), [path])
 }
 
 const FileBrowser = forwardRef<FileBrowserHandle, Props>(function FileBrowser(
@@ -71,78 +68,63 @@ const FileBrowser = forwardRef<FileBrowserHandle, Props>(function FileBrowser(
   const [error, setError] = useState('')
 
   const [selected, setSelected] = useState<Set<string>>(new Set())
-  const [selectMode, setSelectMode] = useState(false)
   const [query, setQuery] = useState('')
   const [sort, setSort] = useState<SortKey>('name')
   const [asc, setAsc] = useState(true)
+  const [pathEditing, setPathEditing] = useState(false)
+  const [pathDraft, setPathDraft] = useState('')
 
   // 弹窗状态
   const [preview, setPreview] = useState<Entry | null>(null)
   const [renaming, setRenaming] = useState<Entry | null>(null)
   const [deleting, setDeleting] = useState<Entry[] | null>(null)
   const [mkdirOpen, setMkdirOpen] = useState(false)
-  /** 移动端长按唤出的操作抽屉：非空即打开，值是被操作的那一项 */
   const [sheetFor, setSheetFor] = useState<Entry | null>(null)
-  /** 分享弹窗：非空即打开，值是被分享的那一项 */
   const [shareFor, setShareFor] = useState<Entry | null>(null)
+  /** 右键 / 更多菜单：{x, y, entry|null}。entry 为 null 表示空白处右键 */
+  const [menu, setMenu] = useState<{ x: number; y: number; entry: Entry | null } | null>(null)
   const [busy, setBusy] = useState(false)
   const [batchBusy, setBatchBusy] = useState(false)
   const [batchProgress, setBatchProgress] = useState(0)
 
-  // 请求竞态保护：目录快速切换时只认最后一次
   const reqSeq = useRef(0)
+  /** 多选锚点：Shift 范围选择的起点（在 visible 里的下标） */
+  const anchorRef = useRef<number | null>(null)
 
-  const load = useCallback(
-    async (target: string, silent = false) => {
-      const seq = ++reqSeq.current
-      if (!silent) setLoading(true)
-      setError('')
-      try {
-        const res = await api.list(target)
-        if (seq !== reqSeq.current) return // 已被更新的请求取代
-        setItems(res.items || [])
-        setPath(res.path ?? target)
-        setSelected(new Set())
-        setSelectMode(false)
-        // 把当前目录同步进 URL（hash 路由），浏览器前进/后退也能用。
-        // navigate 内部对「hash 已相同」做了短路，不会无谓写历史。
-        syncDiskPath(res.path ?? target)
-      } catch (err) {
-        if (seq !== reqSeq.current) return
-        const msg = err instanceof ApiError ? err.friendly : '加载失败'
-        setError(msg)
-        setItems([])
-      } finally {
-        if (seq === reqSeq.current) setLoading(false)
-      }
-    },
-    [],
-  )
+  const load = useCallback(async (target: string, silent = false) => {
+    const seq = ++reqSeq.current
+    if (!silent) setLoading(true)
+    setError('')
+    try {
+      const res = await api.list(target)
+      if (seq !== reqSeq.current) return
+      setItems(res.items || [])
+      setPath(res.path ?? target)
+      setSelected(new Set())
+      anchorRef.current = null
+      syncDiskPath(res.path ?? target)
+    } catch (err) {
+      if (seq !== reqSeq.current) return
+      setError(err instanceof ApiError ? err.friendly : '加载失败')
+      setItems([])
+    } finally {
+      if (seq === reqSeq.current) setLoading(false)
+    }
+  }, [])
 
-  // path 的镜像 ref：供命令式句柄读取「此刻」的目录，
-  // 避免闭包捕获到渲染时的旧值
   const pathRef = useRef(path)
-  useEffect(() => {
-    pathRef.current = path
-  }, [path])
+  useEffect(() => { pathRef.current = path }, [path])
 
-  // 暴露给父组件：上传完成后静默刷新、拖拽时取当前目录
-  useImperativeHandle(
-    ref,
-    () => ({
-      reload: () => void load(pathRef.current, true),
-      currentPath: () => pathRef.current,
-    }),
-    [load],
-  )
+  useImperativeHandle(ref, () => ({
+    reload: () => void load(pathRef.current, true),
+    currentPath: () => pathRef.current,
+  }), [load])
 
-  // 首次加载：以 URL hash 里的目录为准（直接打开带目录的链接时）
   useEffect(() => {
     const r = parseHash()
     void load(r.view === 'disk' ? r.path : '')
   }, [load])
 
-  // 浏览器前进/后退：hash 变了但仍是磁盘视图时，重载到对应目录
   useEffect(() => {
     const onHash = () => {
       const r = parseHash()
@@ -153,27 +135,21 @@ const FileBrowser = forwardRef<FileBrowserHandle, Props>(function FileBrowser(
     return () => window.removeEventListener('hashchange', onHash)
   }, [load])
 
-  useEffect(() => {
-    onPathChange?.(path)
-  }, [path, onPathChange])
+  useEffect(() => { onPathChange?.(path) }, [path, onPathChange])
 
-  // ── 派生数据：过滤 + 排序 ────────────────────────────────────
+  // ── 派生数据：过滤 + 排序 ────────────────────────────────────────
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase()
-    let list = q ? items.filter((e) => e.name.toLowerCase().includes(q)) : items.slice()
-
+    const list = q ? items.filter((e) => e.name.toLowerCase().includes(q)) : items.slice()
     const dir = asc ? 1 : -1
     list.sort((a, b) => {
-      // 目录永远在前，这是文件管理器的通行约定
+      // 目录永远在前，文件管理器的通行约定
       if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1
       switch (sort) {
-        case 'size':
-          return (a.size - b.size) * dir
-        case 'mtime':
-          return (a.mtime - b.mtime) * dir
-        default:
-          // 中文按本地排序规则，避免拼音乱序
-          return a.name.localeCompare(b.name, 'zh-CN') * dir
+        case 'size': return (a.size - b.size) * dir
+        case 'mtime': return (a.mtime - b.mtime) * dir
+        case 'type': return kindLabel(a.name, a.is_dir).localeCompare(kindLabel(b.name, b.is_dir), 'zh-CN') * dir
+        default: return a.name.localeCompare(b.name, 'zh-CN') * dir
       }
     })
     return list
@@ -181,19 +157,28 @@ const FileBrowser = forwardRef<FileBrowserHandle, Props>(function FileBrowser(
 
   const stats = useMemo(() => {
     const dirs = items.filter((e) => e.is_dir).length
-    const files = items.length - dirs
     const total = items.reduce((s, e) => s + (e.is_dir ? 0 : e.size), 0)
-    return { dirs, files, total }
+    return { dirs, files: items.length - dirs, total }
   }, [items])
 
   const allChecked = visible.length > 0 && visible.every((e) => selected.has(e.name))
+  const selectedEntries = items.filter((i) => selected.has(i.name))
+  const selectedSize = selectedEntries.reduce((s, e) => s + (e.is_dir ? 0 : e.size), 0)
+  const crumb = buildBreadcrumb(path)
 
-  // ── 交互 ────────────────────────────────────────────────────
+  // ── 导航 ────────────────────────────────────────────────────────
+  function goUp() { if (path) void load(parentPath(path)) }
+  function goBack() { window.history.back() }
+  function goForward() { window.history.forward() }
+  function refresh() { void load(path) }
 
-  function openDir(entry: Entry) {
-    void load(entry.path)
+  function commitPath() {
+    setPathEditing(false)
+    const raw = pathDraft.trim().replace(/^[/\\]+/, '')
+    if (raw !== path) void load(raw)
   }
 
+  // ── 选择 ────────────────────────────────────────────────────────
   function toggleSelect(name: string) {
     setSelected((prev) => {
       const next = new Set(prev)
@@ -201,17 +186,38 @@ const FileBrowser = forwardRef<FileBrowserHandle, Props>(function FileBrowser(
       else next.add(name)
       return next
     })
+    const i = visible.findIndex((e) => e.name === name)
+    if (i >= 0) anchorRef.current = i
   }
 
   function toggleAll() {
     setSelected(allChecked ? new Set() : new Set(visible.map((e) => e.name)))
+    anchorRef.current = null
   }
 
-  function goUp() {
-    if (!path) return
-    void load(parentPath(path))
+  /** Ctrl / Shift 多选，普通单击只选中该项 */
+  function handleRowClick(entry: Entry, e: React.MouseEvent) {
+    const i = visible.findIndex((v) => v.name === entry.name)
+    if (e.ctrlKey || e.metaKey) {
+      e.preventDefault()
+      toggleSelect(entry.name)
+      return
+    }
+    if (e.shiftKey && anchorRef.current !== null) {
+      e.preventDefault()
+      const [from, to] = [anchorRef.current, i].sort((a, b) => a - b)
+      setSelected((prev) => {
+        const next = new Set(prev)
+        for (let k = from; k <= to; k++) next.add(visible[k].name)
+        return next
+      })
+      return
+    }
+    anchorRef.current = i
+    setSelected(new Set([entry.name]))
   }
 
+  // ── 写操作 ──────────────────────────────────────────────────────
   async function doMkdir(name: string) {
     setBusy(true)
     try {
@@ -221,9 +227,7 @@ const FileBrowser = forwardRef<FileBrowserHandle, Props>(function FileBrowser(
       await load(path, true)
     } catch (err) {
       toast.error(err instanceof ApiError ? err.friendly : '创建失败')
-    } finally {
-      setBusy(false)
-    }
+    } finally { setBusy(false) }
   }
 
   async function doRename(entry: Entry, newName: string) {
@@ -235,9 +239,7 @@ const FileBrowser = forwardRef<FileBrowserHandle, Props>(function FileBrowser(
       await load(path, true)
     } catch (err) {
       toast.error(err instanceof ApiError ? err.friendly : '重命名失败')
-    } finally {
-      setBusy(false)
-    }
+    } finally { setBusy(false) }
   }
 
   async function doDelete(entries: Entry[]) {
@@ -245,72 +247,36 @@ const FileBrowser = forwardRef<FileBrowserHandle, Props>(function FileBrowser(
     try {
       const res = await api.remove(entries.map((e) => e.path))
       const failedCount = res.failed?.length ?? 0
-      const okCount = entries.length - failedCount
-
-      if (failedCount === 0) {
-        toast.success(`已删除 ${okCount} 项`)
-      } else {
-        toast.warning(`已删除 ${okCount} 项，${failedCount} 项失败`, res.failed?.[0]?.error)
-      }
+      if (failedCount === 0) toast.success(`已删除 ${entries.length - failedCount} 项`)
+      else toast.warning(`已删除 ${entries.length - failedCount} 项，${failedCount} 项失败`, res.failed?.[0]?.error)
       setDeleting(null)
       await load(path, true)
     } catch (err) {
       toast.error(err instanceof ApiError ? err.friendly : '删除失败')
-    } finally {
-      setBusy(false)
-    }
+    } finally { setBusy(false) }
   }
 
-  /**
-   * 批量下载。
-   *
-   * 不引入 zip 库 —— 多文件时改为逐个触发浏览器下载，
-   * 浏览器会自行排队。这样零依赖，且不占用内存做压缩。
-   * 文件夹会被跳过并告知用户（递归打包需要额外实现）。
-   */
+  /** 批量下载：逐个触发浏览器下载，不引 zip 依赖 */
   async function doDownloadSelected() {
     const files = selectedEntries.filter((e) => !e.is_dir)
     const dirCount = selectedEntries.length - files.length
-
     if (!files.length) {
       toast.warning('所选内容都是文件夹', '文件夹需进入后再选择其中的文件')
       return
     }
-
     setBatchBusy(true)
-    let done = 0
-    let failed = 0
-
+    let done = 0, failed = 0
     for (const f of files) {
-      try {
-        await api.download(f.path, f.name)
-        done++
-      } catch {
-        failed++
-      }
+      try { await api.download(f.path, f.name); done++ } catch { failed++ }
       setBatchProgress(Math.round(((done + failed) / files.length) * 100))
-      // 连续触发下载时留一点间隔，避免浏览器把后续请求当弹窗拦截
       await new Promise((r) => setTimeout(r, 350))
     }
-
     setBatchBusy(false)
     setBatchProgress(0)
-
-    if (failed === 0) {
-      toast.success(`已下载 ${done} 个文件`, dirCount ? `跳过 ${dirCount} 个文件夹` : undefined)
-    } else {
-      toast.warning(`下载完成 ${done} 个，${failed} 个失败`, dirCount ? `跳过 ${dirCount} 个文件夹` : undefined)
-    }
+    if (failed === 0) toast.success(`已下载 ${done} 个文件`, dirCount ? `跳过 ${dirCount} 个文件夹` : undefined)
+    else toast.warning(`下载完成 ${done} 个，${failed} 个失败`, dirCount ? `跳过 ${dirCount} 个文件夹` : undefined)
   }
 
-  /**
-   * 下载单个文件（供长按菜单复用）。
-   *
-   * 抽出来是因为「单个下载」原来只有 FileRow 里有实现，而长按菜单
-   * 也需要它。复制一份就会有两套错误提示与进度口径，早晚不一致。
-   * FileRow 内部那份保留（它有自己的 downloading 菊花状态），
-   * 这里是给没有局部状态的调用方用的。
-   */
   async function downloadOne(entry: Entry) {
     const id = toast.info(`开始下载 ${entry.name}`, '准备中…')
     try {
@@ -326,365 +292,340 @@ const FileBrowser = forwardRef<FileBrowserHandle, Props>(function FileBrowser(
     }
   }
 
-  /**
-   * 长按菜单的条目。
-   *
-   * 与桌面端悬停出的按钮集合保持一致（少一个「预览」在文件夹上），
-   * 顺序也照抄：预览 → 下载 → 重命名 → 删除。
-   */
-  function buildSheetItems(entry: Entry): SheetItem[] {
-    const items: SheetItem[] = []
-
-    if (!entry.is_dir) {
-      items.push({
-        key: 'preview',
-        label: '预览',
-        icon: ICONS.eye,
-        onClick: () => setPreview(entry),
-      })
-      items.push({
-        key: 'download',
-        label: '下载',
-        icon: ICONS.download,
-        onClick: () => void downloadOne(entry),
-      })
-    }
-
-    items.push({
-      key: 'share',
-      label: '分享',
-      icon: ICONS.share,
-      onClick: () => setShareFor(entry),
-    })
-    items.push({
-      key: 'rename',
-      label: '重命名',
-      icon: ICONS.rename,
-      disabled: uploading,
-      onClick: () => setRenaming(entry),
-    })
-    items.push({
-      key: 'delete',
-      label: '删除',
-      icon: ICONS.trash,
-      danger: true,
-      disabled: uploading,
-      onClick: () => setDeleting([entry]),
-    })
-
-    return items
+  function openOrPreview(entry: Entry) {
+    if (entry.is_dir) void load(entry.path)
+    else setPreview(entry)
   }
 
-  // 键盘快捷键：仅当没有弹窗时生效
-  // 抽屉也算「弹窗」：它锁了 body 滚动，此时放快捷键会与抽屉互相打架
+  function requestDelete(entries: Entry[]) {
+    if (entries.length) setDeleting(entries)
+  }
+
+  // ── 上下文菜单 / 抽屉条目 ─────────────────────────────────────────
+  function buildMenuItems(entry: Entry | null): MenuItem[] {
+    if (!entry) {
+      return [
+        { key: 'refresh', label: '刷新', icon: ICONS.refresh, kbd: 'F5', onClick: refresh },
+        { key: 'sep1', label: '', separator: true, onClick: () => {} },
+        { key: 'mkdir', label: '新建文件夹', icon: ICONS.folderPlus, onClick: () => setMkdirOpen(true) },
+        { key: 'upload', label: '上传文件', icon: ICONS.upload, onClick: () => onRequestUpload?.() },
+        { key: 'selectall', label: '全选', icon: ICONS.selectAll, kbd: 'Ctrl+A', onClick: toggleAll },
+      ]
+    }
+    const list: MenuItem[] = [
+      {
+        key: 'open', label: entry.is_dir ? '打开' : '预览', icon: entry.is_dir ? ICONS.folder : ICONS.eye,
+        onClick: () => openOrPreview(entry),
+      },
+    ]
+    if (!entry.is_dir) {
+      list.push({ key: 'download', label: '下载', icon: ICONS.download, onClick: () => void downloadOne(entry) })
+    }
+    list.push(
+      { key: 'sep1', label: '', separator: true, onClick: () => {} },
+      { key: 'share', label: '分享', icon: ICONS.share, onClick: () => setShareFor(entry) },
+      { key: 'rename', label: '重命名', icon: ICONS.rename, kbd: 'F2', disabled: uploading, onClick: () => setRenaming(entry) },
+      { key: 'copyPath', label: '复制路径', icon: ICONS.copy, onClick: () => void copyText(entry.path) },
+      { key: 'sep2', label: '', separator: true, onClick: () => {} },
+      { key: 'delete', label: '删除', icon: ICONS.trash, kbd: 'Delete', danger: true, disabled: uploading, onClick: () => requestDelete([entry]) },
+    )
+    return list
+  }
+
+  function buildSheetItems(entry: Entry): SheetItem[] {
+    const list: SheetItem[] = []
+    if (!entry.is_dir) {
+      list.push({ key: 'preview', label: '预览', icon: ICONS.eye, onClick: () => setPreview(entry) })
+      list.push({ key: 'download', label: '下载', icon: ICONS.download, onClick: () => void downloadOne(entry) })
+    }
+    list.push(
+      { key: 'share', label: '分享', icon: ICONS.share, onClick: () => setShareFor(entry) },
+      { key: 'rename', label: '重命名', icon: ICONS.rename, disabled: uploading, onClick: () => setRenaming(entry) },
+      { key: 'delete', label: '删除', icon: ICONS.trash, danger: true, disabled: uploading, onClick: () => requestDelete([entry]) },
+    )
+    return list
+  }
+
+  async function copyText(text: string) {
+    try { await navigator.clipboard.writeText(text); toast.success('路径已复制', text) }
+    catch { toast.warning('复制失败') }
+  }
+
+  // ── 键盘快捷键 ──────────────────────────────────────────────────
   const anyModalOpen = !!(preview || renaming || deleting || mkdirOpen || sheetFor || shareFor)
   useEffect(() => {
-    if (anyModalOpen) return
+    if (anyModalOpen || pathEditing) return
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement
-      const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)
-      if (typing) return
+      if (/^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)) return
+      const ctrl = e.metaKey || e.ctrlKey
 
-      if (e.key === 'Backspace' && path) {
+      if (e.key === 'F5') { e.preventDefault(); refresh(); return }
+      if (ctrl && e.key.toLowerCase() === 'a') {
         e.preventDefault()
-        goUp()
-      }
-      if (e.key === 'Delete' && selected.size) {
-        e.preventDefault()
-        setDeleting(items.filter((i) => selected.has(i.name)))
-      }
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'a') {
-        e.preventDefault()
-        setSelectMode(true)
         setSelected(new Set(visible.map((i) => i.name)))
+        anchorRef.current = null
+        return
       }
-      if (e.key === 'Escape') {
-        setSelected(new Set())
-        setSelectMode(false)
+      if (e.key === 'Backspace' && path) { e.preventDefault(); goUp(); return }
+      if (e.key === 'Delete' && selected.size) { e.preventDefault(); requestDelete(selectedEntries); return }
+      if (e.key === 'F2' && selected.size === 1) {
+        e.preventDefault()
+        setRenaming(selectedEntries[0])
+        return
       }
+      if (e.key === 'Escape') { setSelected(new Set()); anchorRef.current = null; setQuery('') }
     }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [anyModalOpen, path, selected, items, visible])
+  }, [anyModalOpen, pathEditing, path, selected, items, visible, query])
 
-  const crumb = buildBreadcrumb(path)
-  const selectedEntries = items.filter((i) => selected.has(i.name))
+  // ── 排序 ────────────────────────────────────────────────────────
+  function sortBy(k: SortKey) {
+    if (sort === k) setAsc((v) => !v)
+    else { setSort(k); setAsc(true) }
+  }
+
+  const TH: { key: SortKey; label: string; cls?: string; align?: boolean }[] = [
+    { key: 'name', label: '名称' },
+    { key: 'mtime', label: '修改日期', cls: 'win-hide-md' },
+    { key: 'type', label: '类型', cls: 'win-hide-md' },
+    { key: 'size', label: '大小', cls: 'win-hide-sm', align: true },
+  ]
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      {/* ═══ 工具栏 ═══ */}
-      <div className="flex flex-wrap items-center gap-2 px-3 py-3 sm:px-4">
-        {/* 返回上级 */}
-        <button
-          type="button"
-          onClick={goUp}
-          disabled={!path}
-          title="返回上级（Backspace）"
-          aria-label="返回上级"
-          className={cn(
-            'grid size-9 shrink-0 place-items-center rounded-full border-2 bg-white transition-colors',
-            path
-              ? 'border-[--color-sky-400] text-[--color-sky-600] hover:bg-[--color-sky-50]'
-              : 'cursor-not-allowed border-slate-200 text-slate-300',
-          )}
-        >
-          <Icon d={ICONS.back} />
-        </button>
+    <div className="flex min-h-0 flex-1 flex-col" onClick={() => menu && setMenu(null)}>
+      {/* ═══ 命令栏：常驻操作，按钮带文字 ═══ */}
+      <div className="win-toolbar">
+        <ToolButton label="新建文件夹" icon={<Icon d={ICONS.folderPlus} className="size-4" />} onClick={() => setMkdirOpen(true)} />
+        <ToolButton label="上传" icon={<Icon d={ICONS.upload} className="size-4" />} onClick={onRequestUpload} />
+        <div className="win-tool-sep" />
+        <ToolButton label="刷新" icon={<Icon d={ICONS.refresh} className="size-4" />} onClick={refresh} title="刷新（F5）" />
+        <ToolButton
+          label={allChecked ? '取消全选' : '全选'}
+          icon={<Icon d={ICONS.selectAll} className="size-4" />}
+          onClick={toggleAll}
+          title="全选（Ctrl+A）"
+        />
+        <div className="win-tool-sep" />
+        <ToolButton
+          label={batchBusy ? `下载中 ${batchProgress}%` : '下载'}
+          icon={<Icon d={ICONS.download} className="size-4" />}
+          onClick={() => void doDownloadSelected()}
+          disabled={!selected.size || batchBusy}
+          title="下载所选文件"
+        />
+        <ToolButton
+          label="重命名"
+          icon={<Icon d={ICONS.rename} className="size-4" />}
+          onClick={() => selected.size === 1 && setRenaming(selectedEntries[0])}
+          disabled={selected.size !== 1 || !!uploading}
+          title="重命名（F2）"
+        />
+        <ToolButton
+          label="分享"
+          icon={<Icon d={ICONS.share} className="size-4" />}
+          onClick={() => {
+            const t = selected.size === 1
+              ? selectedEntries[0]
+              : ({ name: path ? path.split('/').pop()! : '根目录', path, is_dir: true } as Entry)
+            setShareFor(t)
+          }}
+          disabled={!path && !selected.size}
+          title="分享选中的文件或当前目录"
+        />
+        <ToolButton
+          label="删除"
+          icon={<Icon d={ICONS.trash} className="size-4" />}
+          danger
+          onClick={() => requestDelete(selectedEntries)}
+          disabled={!selected.size || !!uploading}
+          title="删除（Delete）"
+        />
 
-        {/* 面包屑 */}
-        <nav
-          className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto text-sm"
-          aria-label="目录路径"
-        >
-          <button
-            type="button"
-            onClick={() => void load('')}
-            className={cn(
-              'flex shrink-0 items-center gap-1 rounded-full border-2 px-2.5 py-1 font-bold transition-colors',
-              path
-                ? 'border-transparent text-[--color-ink-soft] hover:border-[--color-sky-200] hover:text-[--color-sky-600]'
-                : 'border-[--color-sky-400] bg-[--color-sky-100] text-[--color-sky-700]',
-            )}
-          >
-            <Icon d={ICONS.home} className="size-3.5" />
-            根目录
-          </button>
-
-          {crumb.map((c, i) => (
-            <span key={c.path} className="flex min-w-0 shrink-0 items-center gap-1">
-              <span className="text-slate-300" aria-hidden>
-                /
-              </span>
-              <button
-                type="button"
-                onClick={() => void load(c.path)}
-                className={cn(
-                  'truncate-1 max-w-[10rem] rounded-full border-2 px-2.5 py-1 font-bold transition-colors',
-                  i === crumb.length - 1
-                    ? 'border-[--color-sky-400] bg-[--color-sky-100] text-[--color-sky-700]'
-                    : 'border-transparent text-[--color-ink-soft] hover:border-[--color-sky-200] hover:text-[--color-sky-600]',
-                )}
-              >
-                {c.name}
-              </button>
-            </span>
-          ))}
-        </nav>
-
-        {/* 搜索 */}
-        <div className="relative w-full sm:w-44">
-          <Icon
-            d={ICONS.search}
-            className="pointer-events-none absolute top-1/2 left-3 size-3.5 -translate-y-1/2 text-[--color-ink-faint]"
-          />
+        {/* 搜索框靠右；窄屏独占一行铺满，避免被挤压裁切 */}
+        <div className="relative ml-auto w-[190px] min-w-[130px] max-sm:ml-0 max-sm:w-full max-sm:basis-full">
+          <Icon d={ICONS.search} className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-[--color-ink-faint]" />
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="搜索"
-            className="field py-1.5 pr-7 pl-8 text-xs"
             aria-label="搜索当前目录"
+            className="field !h-[28px] !py-0 !pr-7 !pl-8 !text-[12px]"
           />
           {query && (
             <button
               type="button"
               onClick={() => setQuery('')}
-              className="absolute top-1/2 right-2.5 -translate-y-1/2 text-[--color-ink-faint] hover:text-[--color-ink]"
+              className="absolute top-1/2 right-2 -translate-y-1/2 text-[--color-ink-faint] hover:text-[--color-ink]"
               aria-label="清除搜索"
             >
               <Icon d={ICONS.close} className="size-3" />
             </button>
           )}
         </div>
+      </div>
 
-        {/* 排序 */}
-        <div className="flex items-center gap-1">
-          {([
-            ['name', '名称'],
-            ['mtime', '时间'],
-            ['size', '大小'],
-          ] as const).map(([k, label]) => (
-            <button
-              key={k}
-              type="button"
-              onClick={() => {
-                if (sort === k) setAsc((v) => !v)
-                else {
-                  setSort(k)
-                  setAsc(true)
-                }
+      {/* ═══ 地址栏 ═══ */}
+      <div className="win-address">
+        <button type="button" className="win-nav-btn" onClick={goBack} title="后退" aria-label="后退">
+          <Icon d={ICONS.chevronLeft} className="size-4" />
+        </button>
+        <button type="button" className="win-nav-btn" onClick={goForward} title="前进" aria-label="前进">
+          <Icon d={ICONS.chevronRight} className="size-4" />
+        </button>
+        <button type="button" className="win-nav-btn" onClick={goUp} disabled={!path} title="上一级（Backspace）" aria-label="上一级">
+          <Icon d={ICONS.arrowUp} className="size-4" />
+        </button>
+        <button type="button" className="win-nav-btn" onClick={refresh} title="刷新（F5）" aria-label="刷新">
+          <Icon d={ICONS.refresh} className="size-3.5" />
+        </button>
+
+        {/* 面包屑：点空白处切成可编辑路径 */}
+        <div
+          className="win-crumbs"
+          title="点击此处可直接输入路径"
+          onClick={(e) => {
+            if ((e.target as HTMLElement).closest('button')) return
+            setPathDraft(path)
+            setPathEditing(true)
+          }}
+        >
+          {pathEditing ? (
+            <input
+              className="win-path-input"
+              value={pathDraft}
+              autoFocus
+              onChange={(e) => setPathDraft(e.target.value)}
+              onBlur={() => setPathEditing(false)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') commitPath()
+                if (e.key === 'Escape') setPathEditing(false)
               }}
-              className={cn(
-                'flex items-center gap-0.5 rounded-full border-2 px-2.5 py-1 text-[11px] font-bold transition-colors',
-                sort === k
-                  ? 'border-[--color-sky-400] bg-[--color-sky-400] text-white'
-                  : 'border-[--color-sky-200] bg-white text-[--color-sky-600] hover:border-[--color-sky-400]',
-              )}
-            >
-              {label}
-              {sort === k && (
-                <span className="text-[9px]" aria-hidden>
-                  {asc ? '▲' : '▼'}
+              aria-label="路径"
+            />
+          ) : (
+            <>
+              <button type="button" className={cn('win-crumb', !path && 'is-current')} onClick={() => void load('')}>
+                <Icon d={ICONS.drive} className="size-3.5" />
+                此电脑
+              </button>
+              {crumb.map((c, i) => (
+                <span key={c.path} className="contents">
+                  <span className="win-crumb-sep">›</span>
+                  <button
+                    type="button"
+                    className={cn('win-crumb', i === crumb.length - 1 && 'is-current')}
+                    onClick={() => void load(c.path)}
+                  >
+                    {c.name}
+                  </button>
                 </span>
+              ))}
+            </>
+          )}
+        </div>
+      </div>
+
+      {/* ═══ 列表 ═══ */}
+      <div className="win-table min-h-0 flex-1 overflow-auto" data-dropzone-inner="">
+        {/* 列头 */}
+        <div className="win-thead">
+          <div className="flex items-center justify-center">
+            <input
+              type="checkbox"
+              checked={allChecked}
+              onChange={toggleAll}
+              disabled={!visible.length}
+              aria-label="全选"
+            />
+          </div>
+          {TH.map((th) => (
+            <button
+              key={th.key}
+              type="button"
+              onClick={() => sortBy(th.key)}
+              className={cn('win-th', th.cls, sort === th.key && 'is-sorted', th.align && 'justify-end')}
+              title={`按${th.label}排序`}
+            >
+              {th.label}
+              {sort === th.key && (
+                <Icon d={asc ? ICONS.arrowUp : ICONS.arrowDown} className="size-3 shrink-0" />
               )}
             </button>
           ))}
+          <div className="win-th !cursor-default justify-end">操作</div>
         </div>
 
-        {/* 操作按钮 */}
-        <div className="flex w-full items-center gap-2 sm:w-auto">
-          <Button
-            onClick={() => setShareFor({ name: path ? path.split('/').pop()! : '根目录', path, is_dir: true } as Entry)}
-            icon={<Icon d={ICONS.share} />}
-            disabled={!path}
-            title={path ? `分享目录 ${path}` : '不能分享根目录'}
-            className="flex-1 sm:flex-none"
-          >
-            分享
-          </Button>
-          <Button
-            onClick={() => setMkdirOpen(true)}
-            icon={<Icon d={ICONS.folderPlus} />}
-            className="flex-1 sm:flex-none"
-          >
-            新建
-          </Button>
-          <Button
-            variant="primary"
-            onClick={onRequestUpload}
-            icon={<Icon d={ICONS.upload} />}
-            className="flex-1 sm:flex-none"
-          >
-            上传
-          </Button>
-        </div>
-      </div>
-
-      {/* ═══ 选中态工具条 ═══ */}
-      <div className="flex min-h-9 flex-wrap items-center gap-2 px-3 pb-2 sm:px-4">
-        <label className="flex cursor-pointer items-center gap-2 text-xs font-bold text-[--color-ink-soft]">
-          <input
-            type="checkbox"
-            checked={allChecked}
-            onChange={toggleAll}
-            disabled={!visible.length}
-            className="size-4 rounded border-slate-300 accent-[--color-sky-500]"
-          />
-          全选
-        </label>
-
-        {selected.size > 0 ? (
-          <>
-            <span className="chip border-2 border-[--color-sky-200] bg-[--color-sky-100] text-[--color-sky-700]">
-              已选 {selected.size} 项
-              {selectedEntries.reduce((s, e) => s + (e.is_dir ? 0 : e.size), 0) > 0 &&
-                ` · ${humanSize(selectedEntries.reduce((s, e) => s + (e.is_dir ? 0 : e.size), 0))}`}
-            </span>
-
-            <button
-              type="button"
-              onClick={() => {
-                setSelected(new Set())
-                setSelectMode(false)
-              }}
-              className="text-xs font-bold text-[--color-ink-faint] hover:text-[--color-sky-600] hover:underline"
-            >
-              取消选择
-            </button>
-
-            <div className="ml-auto flex items-center gap-2">
-              <Button
-                size="sm"
-                onClick={() => void doDownloadSelected()}
-                disabled={batchBusy}
-                icon={<Icon d={ICONS.download} className="size-3.5" />}
-              >
-                {batchBusy ? `打包中 ${batchProgress}%` : '下载所选'}
-              </Button>
-              <Button
-                size="sm"
-                variant="danger"
-                onClick={() => setDeleting(selectedEntries)}
-                disabled={busy || uploading}
-                icon={<Icon d={ICONS.trash} className="size-3.5" />}
-              >
-                删除
-              </Button>
-            </div>
-          </>
-        ) : (
-          <span className="text-xs font-medium text-[--color-ink-faint]">
-            {stats.dirs} 个文件夹 · {stats.files} 个文件
-            {stats.total > 0 && ` · 共 ${humanSize(stats.total)}`}
-            {query && ` · 匹配 ${visible.length} 项`}
-          </span>
-        )}
-      </div>
-
-      {/* ═══ 列表 ═══
-          区块标题沿用参考站点规格：text-2xl font-black text-slate-800 + sky 色图标。 */}
-      <h2 className="flex shrink-0 items-center gap-2 px-4 pt-1 pb-3 text-xl font-black text-slate-800 sm:text-2xl">
-        <Icon
-          d={path ? ICONS.folder : ICONS.cloud}
-          className="size-5 shrink-0 text-[--color-sky-400] sm:size-6"
-          strokeWidth={2.2}
-        />
-        {path ? (crumb[crumb.length - 1]?.name ?? '文件夹') : '根目录'}
-      </h2>
-
-      <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-4 sm:px-2.5">
+        {/* 内容 */}
         {loading ? (
-          <SkeletonRows rows={7} />
+          <SkeletonRows rows={9} />
         ) : error ? (
           <EmptyState
-            icon="⚠️"
-            title="加载失败"
+            icon={ICONS.info}
+            title="无法打开此文件夹"
             hint={error}
-            action={
-              <Button onClick={() => void load(path)} icon={<Icon d={ICONS.refresh} />}>
-                重试
-              </Button>
-            }
+            action={<Button onClick={() => void load(path)} icon={<Icon d={ICONS.refresh} className="size-3.5" />}>重试</Button>}
           />
         ) : visible.length === 0 ? (
           <EmptyState
-            icon={query ? '🔍' : '📂'}
-            title={query ? '没有匹配的内容' : '这个文件夹是空的'}
-            hint={query ? `试试其他关键词，或清除「${query}」` : '拖拽文件到此处，或点击右上角「上传」'}
-            action={
-              query ? (
-                <Button onClick={() => setQuery('')}>清除搜索</Button>
-              ) : (
-                <Button
-                  variant="primary"
-                  onClick={onRequestUpload}
-                  icon={<Icon d={ICONS.upload} />}
-                >
-                  上传文件
-                </Button>
-              )
-            }
+            icon={query ? ICONS.search : ICONS.folder}
+            title={query ? '没有匹配的项目' : '此文件夹为空'}
+            hint={query ? `没有找到与「${query}」匹配的项目` : '把文件拖到这里，或点命令栏的「上传」'}
+            action={query ? (
+              <Button onClick={() => setQuery('')}>清除搜索</Button>
+            ) : (
+              <Button variant="primary" onClick={onRequestUpload} icon={<Icon d={ICONS.upload} className="size-3.5" />}>上传文件</Button>
+            )}
           />
         ) : (
-          <div className="flex flex-col gap-1 px-2 pb-3">
+          <div
+            onContextMenu={(e) => {
+              // 行已自行处理；这里只在空白处右键
+              if ((e.target as HTMLElement).closest('[data-file-row]')) return
+              e.preventDefault()
+              setMenu({ x: e.clientX, y: e.clientY, entry: null })
+            }}
+          >
             {visible.map((entry) => (
               <FileRow
                 key={entry.path}
                 entry={entry}
                 selected={selected.has(entry.name)}
-                selectMode={selectMode}
                 uploading={!!uploading}
                 onToggleSelect={toggleSelect}
-                onOpen={openDir}
+                onRowClick={handleRowClick}
+                onActivate={openOrPreview}
                 onPreview={setPreview}
                 onRename={setRenaming}
-                onDelete={(e) => setDeleting([e])}
-                onShare={(e) => setShareFor(e)}
+                onDelete={(e) => requestDelete([e])}
+                onShare={setShareFor}
+                onContextMenu={(en, x, y) => setMenu({ x, y, entry: en })}
                 onLongPress={setSheetFor}
               />
             ))}
           </div>
         )}
+      </div>
+
+      {/* ═══ 状态栏 ═══ */}
+      <div className="win-statusbar">
+        <span>{loading ? '正在读取…' : `${stats.dirs + stats.files} 个项目`}</span>
+        <span className="sep">|</span>
+        <span>{stats.dirs} 个文件夹 · {stats.files} 个文件</span>
+        {stats.total > 0 && <><span className="sep">|</span><span>{humanSize(stats.total)}</span></>}
+        {selected.size > 0 && (
+          <>
+            <span className="sep">|</span>
+            <span className="font-semibold text-[--color-accent]">已选 {selected.size} 项</span>
+            {selectedSize > 0 && <span>（{humanSize(selectedSize)}）</span>}
+          </>
+        )}
+        {query && <><span className="sep">|</span><span>筛选出 {visible.length} 项</span></>}
+        <span className="ml-auto truncate-1 text-[--color-ink-faint]" title={path}>
+          {path ? `/${path}` : '根目录'}
+        </span>
       </div>
 
       {/* ═══ 弹窗 ═══ */}
@@ -696,7 +637,7 @@ const FileBrowser = forwardRef<FileBrowserHandle, Props>(function FileBrowser(
         isDir={!!shareFor?.is_dir}
         onManage={() => {
           setShareFor(null)
-          navigate({ view: 'shares' })
+          window.location.hash = '/shares'
         }}
       />
       <PreviewModal entry={preview} onClose={() => setPreview(null)} />
@@ -711,7 +652,6 @@ const FileBrowser = forwardRef<FileBrowserHandle, Props>(function FileBrowser(
         onCancel={() => setRenaming(null)}
         onConfirm={(v) => renaming && void doRename(renaming, v)}
       />
-
       <PromptModal
         open={mkdirOpen}
         title="新建文件夹"
@@ -722,30 +662,22 @@ const FileBrowser = forwardRef<FileBrowserHandle, Props>(function FileBrowser(
         onCancel={() => setMkdirOpen(false)}
         onConfirm={(v) => void doMkdir(v)}
       />
-
       <ConfirmModal
         open={!!deleting}
         title="确认删除"
         danger
         busy={busy}
-        message={
-          deleting && deleting.length === 1
-            ? `确定删除「${deleting[0].name}」吗？`
-            : `确定删除选中的 ${deleting?.length ?? 0} 项吗？`
-        }
-        detail={
-          deleting?.some((e) => e.is_dir)
-            ? '包含文件夹，其中的所有内容会一并删除。'
-            : '删除后无法恢复。'
-        }
+        message={deleting && deleting.length === 1
+          ? `确定要删除「${deleting[0].name}」吗？`
+          : `确定要删除选中的 ${deleting?.length ?? 0} 项吗？`}
+        detail={deleting?.some((e) => e.is_dir)
+          ? '包含文件夹，其中的所有内容会一并删除。此操作无法撤销。'
+          : '删除后无法恢复。'}
         confirmText="删除"
         onCancel={() => setDeleting(null)}
         onConfirm={() => deleting && void doDelete(deleting)}
       />
 
-      {/* 移动端长按唤出的操作抽屉。
-          z-index 比 Modal 低一档（70 vs 80）—— 从抽屉点「删除」后
-          弹出的确认框必须盖在抽屉之上，否则遮罩会挡住确认按钮。 */}
       <ActionSheet
         open={!!sheetFor}
         onClose={() => setSheetFor(null)}
@@ -753,13 +685,17 @@ const FileBrowser = forwardRef<FileBrowserHandle, Props>(function FileBrowser(
         subtitle={sheetFor ? (sheetFor.is_dir ? '文件夹' : sheetFor.size_h) : undefined}
         items={sheetFor ? buildSheetItems(sheetFor) : []}
       />
+
+      {menu && (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          items={buildMenuItems(menu.entry)}
+          onClose={() => setMenu(null)}
+        />
+      )}
     </div>
   )
 })
 
 export default FileBrowser
-
-/** 供父组件读取当前路径段（面包屑展示用） */
-export function usePathSegments(path: string) {
-  return useMemo(() => splitPath(path), [path])
-}

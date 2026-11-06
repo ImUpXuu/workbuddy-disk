@@ -123,15 +123,15 @@ export default function UploadDropZone({ getTargetPath, children }: Props) {
 
       {dragging && (
         <div
-          className="pointer-events-none absolute inset-2 z-40 grid place-items-center rounded-[--radius-cute] border-2 border-dashed border-[--color-sky-400] bg-[--color-sky-50]/85 animate-[fade-in_120ms_ease-out]"
+          className="pointer-events-none absolute inset-2 z-40 grid place-items-center rounded border-2 border-dashed border-[--color-accent] bg-white/90 animate-[fade-in_120ms_ease-out]"
           aria-hidden
         >
-          <div className="flex flex-col items-center gap-1.5 text-center">
-            <span className="icon-disc size-14 text-2xl">
-              <Icon d={ICONS.inbox} className="size-6 text-[--color-sky-600]" strokeWidth={2} />
-            </span>
-            <p className="text-base font-black text-[--color-sky-600]">松手即上传</p>
-            <p className="text-xs font-bold text-[--color-ink-soft]">
+          <div className="flex flex-col items-center gap-2 text-center">
+            <div className="icon-disc size-12 text-[--color-accent]">
+              <Icon d={ICONS.inbox} className="size-6" strokeWidth={1.8} />
+            </div>
+            <p className="text-[14px] font-semibold text-[--color-accent]">松手即上传</p>
+            <p className="text-[12px] text-[--color-ink-soft]">
               {hint} → 「{getTargetPath() || '根目录'}」
             </p>
           </div>

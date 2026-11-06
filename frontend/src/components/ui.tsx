@@ -1,9 +1,11 @@
 /**
- * 基础 UI 组件集合。
+ * 基础 UI 组件集合 —— Windows 文件资源管理器式。
  *
- * 视觉规范见 index.css 的「笔绘风格组件」区块。
- * 统一风格的关键：所有可交互元素都带 2px 描边 + 硬阴影，
- * 悬停浮起、按下压平。
+ * 视觉规范见 index.css。要点：
+ *   - 扁平、1px 细边框、4~6px 小圆角，无硬阴影、无浮起动画
+ *   - 按钮带文字标签，操作常驻，不靠 hover 才能发现
+ *   - 弹窗是标准对话框（标题栏 + 内容 + 底部按钮区）
+ *   - 保持导出接口不变，业务组件无需改调用方式
  */
 
 import {
@@ -57,14 +59,55 @@ export function Button({
         variant === 'primary' && 'btn-primary',
         variant === 'ghost' && 'btn-ghost',
         variant === 'danger' && 'btn-danger',
-        size === 'sm' && '!px-3 !py-1.5 !text-xs',
+        size === 'sm' && '!min-h-[26px] !px-2 !py-1 !text-[11.5px]',
         className,
       )}
       disabled={disabled || loading}
       {...rest}
     >
-      {loading ? <Spinner /> : icon}
+      {loading ? <Spinner className="size-3.5" /> : icon}
       {children}
+    </button>
+  )
+}
+
+/** 命令栏按钮：图标 + 文字，无边框，hover 才显底色 */
+export function ToolButton({
+  label,
+  icon,
+  onClick,
+  disabled,
+  active,
+  danger,
+  title,
+  className,
+}: {
+  label?: string
+  icon: ReactNode
+  onClick?(e: React.MouseEvent): void
+  disabled?: boolean
+  active?: boolean
+  danger?: boolean
+  title?: string
+  className?: string
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      title={title ?? label}
+      aria-label={label}
+      aria-pressed={active}
+      className={cn(
+        'win-tool',
+        active && 'is-active',
+        danger && 'is-danger',
+        className,
+      )}
+    >
+      {icon}
+      {label && <span>{label}</span>}
     </button>
   )
 }
@@ -83,7 +126,7 @@ export function Input({ label, hint, className, id, ...rest }: InputProps) {
   return (
     <div className="flex flex-col gap-1.5">
       {label && (
-        <label htmlFor={inputId} className="text-xs font-bold text-[--color-sky-600]">
+        <label htmlFor={inputId} className="text-xs font-semibold text-[--color-ink-soft]">
           {label}
         </label>
       )}
@@ -94,7 +137,7 @@ export function Input({ label, hint, className, id, ...rest }: InputProps) {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// 开关：描边 + 硬阴影风格
+// 开关：Windows 式方形滑轨
 // ═══════════════════════════════════════════════════════════════════
 
 interface SwitchProps {
@@ -110,10 +153,9 @@ export function Switch({ checked, onChange, label, hint, disabled, danger }: Swi
   return (
     <div className="flex items-start justify-between gap-4">
       <div className="min-w-0">
-        <p className="text-sm font-bold text-[--color-ink]">{label}</p>
+        <p className="text-[12.5px] font-semibold text-[--color-ink]">{label}</p>
         {hint && <p className="mt-0.5 text-xs leading-snug text-[--color-ink-soft]">{hint}</p>}
       </div>
-
       <button
         type="button"
         role="switch"
@@ -122,19 +164,19 @@ export function Switch({ checked, onChange, label, hint, disabled, danger }: Swi
         disabled={disabled}
         onClick={() => onChange(!checked)}
         className={cn(
-          'relative mt-0.5 h-7 w-12 shrink-0 rounded-full border-2 transition-colors',
+          'relative mt-0.5 h-5 w-9 shrink-0 rounded-full border transition-colors',
           'disabled:cursor-not-allowed disabled:opacity-50',
           checked
             ? danger
-              ? 'border-amber-400 bg-amber-400'
-              : 'border-[--color-sky-400] bg-[--color-sky-400]'
-            : 'border-slate-300 bg-slate-200',
+              ? 'border-amber-600 bg-amber-500'
+              : 'border-[--color-accent] bg-[--color-accent]'
+            : 'border-[--color-line-strong] bg-[#e6e9ed]',
         )}
       >
         <span
           className={cn(
-            'absolute top-[1px] size-5 rounded-full bg-white shadow-sm transition-transform',
-            checked ? 'translate-x-[1.375rem]' : 'translate-x-[1px]',
+            'absolute top-[2px] size-3.5 rounded-full bg-white shadow-sm transition-transform',
+            checked ? 'translate-x-[1.125rem]' : 'translate-x-[2px]',
           )}
         />
       </button>
@@ -143,7 +185,7 @@ export function Switch({ checked, onChange, label, hint, disabled, danger }: Swi
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// 模态框：笔绘卡片
+// 模态框：标准对话框
 // ═══════════════════════════════════════════════════════════════════
 
 interface ModalProps {
@@ -160,16 +202,13 @@ export function Modal({ open, onClose, title, children, footer, size = 'md' }: M
 
   useEffect(() => {
     if (!open) return
-
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose()
     }
     document.addEventListener('keydown', onKey)
-
     const prevOverflow = document.body.style.overflow
     document.body.style.overflow = 'hidden'
     panelRef.current?.focus()
-
     return () => {
       document.removeEventListener('keydown', onKey)
       document.body.style.overflow = prevOverflow
@@ -181,11 +220,10 @@ export function Modal({ open, onClose, title, children, footer, size = 'md' }: M
   return (
     <div className="fixed inset-0 z-[80] flex items-center justify-center p-4">
       <div
-        className="absolute inset-0 bg-slate-900/25 animate-[fade-in_140ms_ease-out]"
+        className="absolute inset-0 bg-slate-900/30 animate-[fade-in_120ms_ease-out]"
         onClick={onClose}
         aria-hidden
       />
-
       <div
         ref={panelRef}
         role="dialog"
@@ -193,34 +231,30 @@ export function Modal({ open, onClose, title, children, footer, size = 'md' }: M
         aria-label={title}
         tabIndex={-1}
         className={cn(
-          'relative w-full bg-white focus:outline-none',
-          // 笔绘卡片：2px 描边 + 硬阴影 + 大圆角
-          'border-2 border-[--color-sky-400] rounded-3xl',
-          'shadow-[6px_6px_0_var(--color-sky-400)]',
-          'animate-[modal-in_180ms_ease-out]',
+          'relative flex w-full flex-col bg-white focus:outline-none',
+          'border border-[--color-line-strong] rounded-md shadow-[--shadow-cute-lg]',
+          'animate-[modal-in_140ms_ease-out]',
           size === 'sm' && 'max-w-sm',
           size === 'md' && 'max-w-lg',
-          size === 'lg' && 'max-w-2xl',
+          size === 'lg' && 'max-w-3xl',
         )}
       >
-        <header className="flex items-center justify-between gap-4 border-b-2 border-[--color-sky-100] px-5 py-4">
-          <h2 className="text-base font-black text-[--color-ink]">{title}</h2>
+        <header className="flex shrink-0 items-center justify-between gap-4 border-b border-[--color-line] px-4 py-3">
+          <h2 className="truncate-1 text-[13px] font-semibold text-[--color-ink]">{title}</h2>
           <button
             type="button"
             onClick={onClose}
-            className="grid size-8 place-items-center rounded-full border-2 border-[--color-sky-200] bg-white text-[--color-ink-soft] transition-colors hover:border-[--color-sky-400] hover:text-[--color-sky-600]"
+            className="grid size-6 shrink-0 place-items-center rounded text-[--color-ink-soft] transition-colors hover:bg-[#eceff3] hover:text-[--color-ink]"
             aria-label="关闭"
           >
-            <svg viewBox="0 0 24 24" className="size-4" fill="none" stroke="currentColor" strokeWidth={2.5}>
-              <path d="M18 6 6 18M6 6l12 12" strokeLinecap="round" />
-            </svg>
+            <Icon d={ICONS.close} className="size-3.5" strokeWidth={2} />
           </button>
         </header>
 
-        <div className="max-h-[70vh] overflow-y-auto px-5 py-4">{children}</div>
+        <div className="max-h-[70vh] min-h-0 overflow-y-auto px-4 py-3.5">{children}</div>
 
         {footer && (
-          <footer className="flex items-center justify-end gap-2 border-t-2 border-[--color-sky-100] px-5 py-3.5">
+          <footer className="flex shrink-0 items-center justify-end gap-2 border-t border-[--color-line] bg-[--color-surface-alt] px-4 py-2.5">
             {footer}
           </footer>
         )}
@@ -230,27 +264,93 @@ export function Modal({ open, onClose, title, children, footer, size = 'md' }: M
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// 底部抽屉（ActionSheet）—— 移动端长按文件唤出的操作菜单
+// 上下文菜单（右键 / 更多按钮共用）
+// ═══════════════════════════════════════════════════════════════════
+
+export interface MenuItem {
+  key: string
+  label: string
+  icon?: string
+  kbd?: string
+  danger?: boolean
+  disabled?: boolean
+  separator?: boolean
+  onClick(): void
+}
+
+export function ContextMenu({
+  x,
+  y,
+  items,
+  onClose,
+}: {
+  x: number
+  y: number
+  items: MenuItem[]
+  onClose(): void
+}) {
+  const ref = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const onDown = (e: MouseEvent) => {
+      if (!ref.current?.contains(e.target as Node)) onClose()
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    window.addEventListener('resize', onClose)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+      window.removeEventListener('resize', onClose)
+    }
+  }, [onClose])
+
+  // 贴边时翻转，避免菜单溢出视口
+  const left = Math.min(x, Math.max(8, window.innerWidth - 196))
+  const top = Math.min(y, Math.max(8, window.innerHeight - items.length * 34 - 20))
+
+  return (
+    <div ref={ref} className="win-menu animate-[fade-in_100ms_ease-out]" style={{ left, top }} role="menu">
+      {items.map((item) =>
+        item.separator ? (
+          <div key={item.key} className="win-menu-sep" />
+        ) : (
+          <button
+            key={item.key}
+            type="button"
+            role="menuitem"
+            disabled={item.disabled}
+            data-menu-item={item.key}
+            onClick={() => {
+              onClose()
+              item.onClick()
+            }}
+            className={cn('win-menu-item', item.danger && 'is-danger')}
+          >
+            {item.icon && <Icon d={item.icon} className="size-3.5 shrink-0" strokeWidth={1.8} />}
+            <span>{item.label}</span>
+            {item.kbd && <span className="kbd">{item.kbd}</span>}
+          </button>
+        ),
+      )}
+    </div>
+  )
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// 底部抽屉（ActionSheet）—— 移动端操作菜单
 // ═══════════════════════════════════════════════════════════════════
 //
-// 为什么不用 Modal 复用：移动端的操作菜单应该从底部推上来（拇指可达区），
-// 而不是屏幕正中。这是 iOS/Android 的原生习惯，用户不需要学习。
-//
-// z-index 分层（三层必须严格递增，否则会出现「弹窗盖住抽屉」的错乱）：
-//   z-[60] UploadPanel  上传面板
-//   z-[69] 抽屉遮罩
-//   z-[70] 抽屉本体
-//   z-[80] Modal        重命名/删除确认等二次弹窗
-//
-// 抽屉的 z 必须**低于** Modal：用户从抽屉点「删除」后会弹出确认框，
-// 那个确认框必须盖在抽屉之上，否则抽屉的遮罩会挡住用户要点的按钮。
+// z-index 分层：UploadPanel 60 < 抽屉 70 < Modal 80 < ContextMenu 90
+// 抽屉低于 Modal，从抽屉点「删除」弹出的确认框才能盖在上面。
 
 export interface SheetItem {
   key: string
   label: string
-  /** 图标路径（ICONS 里的值） */
   icon: string
-  /** 危险操作：红色呈现 */
   danger?: boolean
   disabled?: boolean
   onClick(): void
@@ -259,9 +359,7 @@ export interface SheetItem {
 interface ActionSheetProps {
   open: boolean
   onClose(): void
-  /** 标题，一般是文件名 —— 让用户确认操作对象没点错 */
   title?: string
-  /** 副标题，例如「文件夹」或文件大小 */
   subtitle?: string
   items: SheetItem[]
 }
@@ -271,18 +369,13 @@ export function ActionSheet({ open, onClose, title, subtitle, items }: ActionShe
 
   useEffect(() => {
     if (!open) return
-
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose()
     }
     document.addEventListener('keydown', onKey)
-
-    // 锁滚动：抽屉后面的列表还能滚的话，长按拖动会带着列表一起动，
-    // 手感很怪，也容易误触发第二次长按
     const prevOverflow = document.body.style.overflow
     document.body.style.overflow = 'hidden'
     panelRef.current?.focus()
-
     return () => {
       document.removeEventListener('keydown', onKey)
       document.body.style.overflow = prevOverflow
@@ -291,14 +384,7 @@ export function ActionSheet({ open, onClose, title, subtitle, items }: ActionShe
 
   if (!open) return null
 
-  /** 先关抽屉再执行动作。
-   *
-   *  顺序很重要：像「重命名」「删除确认」这类动作会打开 Modal，
-   *  而 Modal 与抽屉各自都会写 document.body.style.overflow 并在
-   *  卸载时恢复。如果抽屉后关，它的恢复动作会把 Modal 刚设上的
-   *  'hidden' 覆盖回 ''，导致背景可滚动。
-   *  先 onClose() 让抽屉的清理先跑完，Modal 再设就是最终值。
-   */
+  /** 先关抽屉再执行动作：两者的 body overflow 清理顺序不能颠倒 */
   function run(item: SheetItem) {
     if (item.disabled) return
     onClose()
@@ -307,79 +393,52 @@ export function ActionSheet({ open, onClose, title, subtitle, items }: ActionShe
 
   return (
     <div className="fixed inset-0 z-[70] flex flex-col justify-end sm:hidden">
-      {/* 遮罩：点击关闭。用 fade-in 让它和抽屉同步出现 */}
       <div
-        className="absolute inset-0 bg-slate-900/35 animate-[fade-in_140ms_ease-out]"
+        className="absolute inset-0 bg-slate-900/35 animate-[fade-in_120ms_ease-out]"
         onClick={onClose}
         aria-hidden
       />
-
       <div
         ref={panelRef}
         role="dialog"
         aria-modal="true"
         aria-label={title || '文件操作'}
         tabIndex={-1}
-        className={cn(
-          'relative w-full bg-white focus:outline-none',
-          // 只圆上两个角 —— 下沿要贴着屏幕边缘，圆角会露出底色
-          'rounded-t-3xl border-t-2 border-x-2 border-[--color-sky-400]',
-          'pb-[max(0.75rem,env(safe-area-inset-bottom))]',
-          'animate-[sheet-up_200ms_cubic-bezier(0.16,1,0.3,1)]',
-        )}
+        className="relative w-full bg-white focus:outline-none rounded-t-lg border-t border-[--color-line] pb-[max(0.75rem,env(safe-area-inset-bottom))] animate-[sheet-up_180ms_cubic-bezier(0.16,1,0.3,1)]"
       >
-        {/* 抓手：移动端用户会自然地想「往下拖」关掉它 */}
         <div className="flex justify-center pt-2.5" aria-hidden>
-          <span className="h-1.5 w-10 rounded-full bg-[--color-sky-100]" />
+          <span className="h-1 w-9 rounded-full bg-[--color-line-strong]" />
         </div>
-
         {(title || subtitle) && (
-          <div className="px-5 pb-3 pt-3.5 text-center">
-            <p className="truncate-1 text-sm font-black text-[--color-ink]">{title}</p>
-            {subtitle && (
-              <p className="mt-0.5 text-[11px] font-medium text-[--color-ink-faint]">
-                {subtitle}
-              </p>
-            )}
+          <div className="px-5 pb-2.5 pt-3 text-center">
+            <p className="truncate-1 text-[13px] font-semibold text-[--color-ink]">{title}</p>
+            {subtitle && <p className="mt-0.5 text-[11px] text-[--color-ink-faint]">{subtitle}</p>}
           </div>
         )}
-
-        <ul className="px-3 pb-1">
+        <ul className="px-2 pb-1">
           {items.map((item) => (
             <li key={item.key}>
               <button
                 type="button"
                 disabled={item.disabled}
                 onClick={() => run(item)}
-                // 稳定的测试锚点。用文案定位会被图标 svg 污染
-                // accessible name（有时是「删除」有时是「🗑️ 删除」），
-                // 不同浏览器/版本还不一致。key 是确定的。
                 data-sheet-item={item.key}
                 className={cn(
-                  'flex w-full items-center gap-3 rounded-2xl px-4 py-3.5 text-left transition-colors',
-                  // 触摸目标 ≥44px：Apple HIG 的最小可点击尺寸，py-3.5 + 图标已经超过
-                  'disabled:opacity-40',
-                  item.danger
-                    ? 'text-red-600 active:bg-red-50'
-                    : 'text-[--color-ink] active:bg-[--color-sky-50]',
+                  'flex w-full items-center gap-3 rounded px-4 py-3 text-left transition-colors disabled:opacity-40',
+                  item.danger ? 'text-[--color-danger] active:bg-[--color-danger-soft]' : 'text-[--color-ink] active:bg-[#eef1f5]',
                 )}
               >
-                <Icon
-                  d={item.icon}
-                  className={cn('size-5', item.danger ? 'text-red-500' : 'text-[--color-sky-600]')}
-                />
-                <span className="text-sm font-bold">{item.label}</span>
+                <Icon d={item.icon} className={cn('size-4', item.danger ? 'text-[--color-danger]' : 'text-[--color-ink-soft]')} />
+                <span className="text-[12.5px] font-medium">{item.label}</span>
               </button>
             </li>
           ))}
         </ul>
-
-        {/* 取消按钮单独一档，和上面的操作拉开距离 —— 防止误触 */}
-        <div className="border-t-2 border-[--color-sky-100] px-3 pt-2">
+        <div className="border-t border-[--color-line] px-2 pt-2">
           <button
             type="button"
             onClick={onClose}
-            className="w-full rounded-2xl px-4 py-3.5 text-center text-sm font-black text-[--color-ink-soft] active:bg-[--color-sky-50]"
+            className="w-full rounded px-4 py-3 text-center text-[12.5px] font-semibold text-[--color-ink-soft] active:bg-[#eef1f5]"
           >
             取消
           </button>
@@ -394,7 +453,7 @@ export function ActionSheet({ open, onClose, title, subtitle, items }: ActionShe
 // ═══════════════════════════════════════════════════════════════════
 
 export function EmptyState({
-  icon = '🗂️',
+  icon = 'file',
   title,
   hint,
   action,
@@ -405,27 +464,27 @@ export function EmptyState({
   action?: ReactNode
 }) {
   return (
-    <div className="flex flex-col items-center justify-center gap-3 px-6 py-16 text-center">
-      <span className="icon-disc size-14 text-2xl" aria-hidden>
-        {icon}
-      </span>
-      <p className="text-sm font-black text-[--color-ink]">{title}</p>
+    <div className="flex flex-col items-center justify-center gap-2 px-6 py-16 text-center">
+      <div className="icon-disc size-12 text-[--color-ink-faint]" aria-hidden>
+        <Icon d={icon} className="size-6" strokeWidth={1.5} />
+      </div>
+      <p className="text-[13px] font-semibold text-[--color-ink]">{title}</p>
       {hint && <p className="max-w-xs text-xs leading-relaxed text-[--color-ink-soft]">{hint}</p>}
-      {action && <div className="mt-1">{action}</div>}
+      {action && <div className="mt-2">{action}</div>}
     </div>
   )
 }
 
-export function SkeletonRows({ rows = 6 }: { rows?: number }) {
+export function SkeletonRows({ rows = 8 }: { rows?: number }) {
   return (
-    <div className="flex flex-col gap-2 p-2">
+    <div className="p-1">
       {Array.from({ length: rows }).map((_, i) => (
-        <div key={i} className="flex items-center gap-3 rounded-2xl px-3 py-2.5">
-          <div className="skeleton size-9 shrink-0 rounded-full" />
-          <div className="flex-1 space-y-2">
-            <div className="skeleton h-3" style={{ width: `${45 + ((i * 13) % 35)}%` }} />
-            <div className="skeleton h-2.5 w-24" />
-          </div>
+        <div key={i} className="flex h-[34px] items-center gap-3 border-b border-[#f0f2f4] px-2">
+          <div className="skeleton size-3.5 shrink-0" />
+          <div className="skeleton size-5 w-5 shrink-0" />
+          <div className="skeleton h-3" style={{ width: `${28 + ((i * 11) % 40)}%` }} />
+          <div className="skeleton ml-auto h-3 w-20" />
+          <div className="skeleton h-3 w-14" />
         </div>
       ))}
     </div>
@@ -447,13 +506,13 @@ export function ProgressBar({
 }) {
   const pct = Math.max(0, Math.min(1, value)) * 100
   return (
-    <div className={cn('h-2 w-full overflow-hidden rounded-full bg-slate-200', className)}>
+    <div className={cn('h-1.5 w-full overflow-hidden rounded-sm bg-[#e6e9ed]', className)}>
       <div
         className={cn(
-          'h-full rounded-full transition-[width] duration-200 ease-out',
-          tone === 'brand' && 'bg-[--color-sky-400]',
-          tone === 'success' && 'bg-emerald-400',
-          tone === 'danger' && 'bg-rose-400',
+          'h-full transition-[width] duration-200 ease-out',
+          tone === 'brand' && 'bg-[--color-accent]',
+          tone === 'success' && 'bg-[--color-success]',
+          tone === 'danger' && 'bg-[--color-danger]',
         )}
         style={{ width: `${pct}%` }}
       />
@@ -462,7 +521,7 @@ export function ProgressBar({
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// 图标按钮：圆形描边，悬停浮起
+// 行内图标按钮（常驻，不靠 hover 出现）
 // ═══════════════════════════════════════════════════════════════════
 
 export function IconButton({
@@ -471,12 +530,14 @@ export function IconButton({
   children,
   tone = 'default',
   disabled,
+  className,
 }: {
   label: string
   onClick(e: React.MouseEvent): void
   children: ReactNode
   tone?: 'default' | 'danger'
   disabled?: boolean
+  className?: string
 }) {
   return (
     <button
@@ -486,11 +547,40 @@ export function IconButton({
       disabled={disabled}
       onClick={onClick}
       className={cn(
-        'grid size-8 place-items-center rounded-full border-2 bg-white transition-colors disabled:opacity-40',
+        'grid size-7 place-items-center rounded border border-transparent bg-white transition-colors disabled:opacity-40',
         tone === 'default'
-          ? 'border-[--color-sky-200] text-[--color-sky-600] hover:border-[--color-sky-400] hover:bg-[--color-sky-50]'
-          : 'border-red-200 text-red-500 hover:border-red-400 hover:bg-red-50',
+          ? 'text-[--color-ink-soft] hover:border-[--color-line] hover:bg-[#eef1f5] hover:text-[--color-ink]'
+          : 'text-[--color-danger] hover:border-[#e8b3ad] hover:bg-[--color-danger-soft]',
+        className,
       )}
+    >
+      {children}
+    </button>
+  )
+}
+
+/** 表格行内的无边框小按钮 */
+export function RowButton({
+  label,
+  onClick,
+  children,
+  danger,
+  disabled,
+}: {
+  label: string
+  onClick(e: React.MouseEvent): void
+  children: ReactNode
+  danger?: boolean
+  disabled?: boolean
+}) {
+  return (
+    <button
+      type="button"
+      title={label}
+      aria-label={label}
+      disabled={disabled}
+      onClick={onClick}
+      className={cn('win-row-btn', danger && 'is-danger')}
     >
       {children}
     </button>
@@ -500,7 +590,7 @@ export function IconButton({
 export function Icon({
   d,
   className,
-  strokeWidth = 2,
+  strokeWidth = 1.8,
 }: {
   d: string
   className?: string
@@ -548,11 +638,23 @@ export const ICONS = {
   file: 'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8ZM14 2v6h6',
   folder: 'M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z',
   chevronRight: 'M9 18l6-6-6-6',
+  chevronLeft: 'M15 18l-6-6 6-6',
   chevronUp: 'M18 15l-6-6-6 6',
   chevronDown: 'M6 9l6 6 6-6',
+  arrowUp: 'M12 19V5M5 12l7-7 7 7',
+  arrowDown: 'M12 5v14M19 12l-7 7-7-7',
   inbox: 'M22 12h-6l-2 3h-4l-2-3H2M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11Z',
   back: 'M19 12H5M12 19l-7-7 7-7',
   share: 'M18 8a3 3 0 1 0-2.8-4L8.9 7.6a3 3 0 1 0 0 4.8l6.3 3.6A3 3 0 1 0 18 16a3 3 0 0 0-2.4-2.9L9.3 9.5a3 3 0 0 0 0-1L15.6 4.9A3 3 0 0 0 18 8Z',
   link: 'M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1.5 1.5M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1.5-1.5',
   users: 'M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8ZM23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75',
+  more: 'M12 5h.01M12 12h.01M12 19h.01',
+  grid: 'M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z',
+  list: 'M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01',
+  selectAll: 'M4 4h4v4H4zM14 4h6v16H4v-6M8 8l8 8',
+  drive: 'M4 6h16v12H4zM8 10h8M8 14h5',
+  clock: 'M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20ZM12 6v6l4 2',
+  sort: 'M3 6h18M6 12h12M10 18h4',
+  keyboard: 'M3 6h18v12H3zM7 10h.01M11 10h.01M15 10h.01M7 14h10',
+  external: 'M14 3h7v7M10 14 21 3M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5',
 } as const

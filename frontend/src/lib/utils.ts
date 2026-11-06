@@ -180,51 +180,60 @@ export function kindOf(name: string, isDir: boolean): FileKind {
   return EXT_MAP[extOf(name)] ?? 'file'
 }
 
-/** 类型 → emoji 图标（轻量，不需要图标库） */
-const ICONS: Record<FileKind, string> = {
-  folder: '📁',
-  image: '🖼️',
-  video: '🎬',
-  audio: '🎵',
-  archive: '🗜️',
-  document: '📄',
-  code: '📜',
-  apk: '📦',
-  font: '🔤',
-  file: '🗂️',  // 见 FileRow.tsx 的说明：回形针太淡
+/**
+ * 类型 → 人类可读的「类型」列文案。
+ * Windows 资源管理器就是在这一列写「文件夹 / JPG 图像 / MP4 视频」，
+ * 让用户不用看扩展名也能判断内容。
+ */
+export function kindLabel(name: string, isDir: boolean): string {
+  if (isDir) return '文件夹'
+  const ext = extOf(name).toUpperCase()
+  switch (kindOf(name, false)) {
+    case 'image': return ext ? `${ext} 图像` : '图像'
+    case 'video': return ext ? `${ext} 视频` : '视频'
+    case 'audio': return ext ? `${ext} 音频` : '音频'
+    case 'archive': return ext ? `${ext} 压缩文件` : '压缩文件'
+    case 'document': return ext ? `${ext} 文档` : '文档'
+    case 'code': return ext ? `${ext} 源文件` : '源文件'
+    case 'apk': return ext ? `${ext} 应用程序` : '应用程序'
+    case 'font': return ext ? `${ext} 字体` : '字体'
+    default: return ext ? `${ext} 文件` : '文件'
+  }
 }
 
-export function iconOf(name: string, isDir: boolean): string {
-  return ICONS[kindOf(name, isDir)]
+/** 类型 → 单色线性 SVG 图标路径（代替 emoji，尺寸整齐、辨识度高） */
+export function fileIconOf(name: string, isDir: boolean): string {
+  const k = kindOf(name, isDir)
+  const paths: Record<FileKind, string> = {
+    folder: 'M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z',
+    image: 'M3 3h18v18H3zM8.5 10a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3ZM21 15l-5-5L5 21',
+    video: 'M3 5h18v14H3zM10 9l5 3-5 3Z',
+    audio: 'M9 18V5l12-2v13M9 18a3 3 0 1 1-6 0 3 3 0 0 1 6 0ZM21 16a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z',
+    archive: 'M4 4h16v4H4zM5 8h14v12H5zM10 12h4',
+    document: 'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8ZM14 2v6h6M8 13h8M8 17h8',
+    code: 'M8 8l-4 4 4 4M16 8l4 4-4 4M14 4l-4 16',
+    apk: 'M12 2 3 7v10l9 5 9-5V7ZM3 7l9 5 9-5M12 12v10',
+    font: 'M4 20 10 4h4l6 16M6.5 14h11',
+    file: 'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8ZM14 2v6h6',
+  }
+  return paths[k]
 }
 
-/** 类型 → 图标底色（Tailwind 类名） */
-const KIND_BG: Record<FileKind, string> = {
-  folder: 'bg-amber-100 text-amber-700',
-  image: 'bg-violet-100 text-violet-700',
-  video: 'bg-rose-100 text-rose-700',
-  audio: 'bg-emerald-100 text-emerald-700',
-  archive: 'bg-orange-100 text-orange-700',
-  document: 'bg-blue-100 text-blue-700',
-  code: 'bg-cyan-100 text-cyan-700',
-  apk: 'bg-lime-100 text-lime-700',
-  font: 'bg-fuchsia-100 text-fuchsia-700',
-  file: 'bg-slate-100 text-slate-600',
-}
-
-export function iconBgOf(name: string, isDir: boolean): string {
-  return KIND_BG[kindOf(name, isDir)]
-}
-
-/** 是否可在浏览器里预览（新标签页打开） */
-export function isPreviewable(name: string): boolean {
-  const k = kindOf(name, false)
-  return k === 'image' || k === 'video' || k === 'audio' || k === 'document' || k === 'code'
-}
-
-/** 图片类才用 <img> 缩略图，其他用 emoji，避免大量请求 */
-export function isImage(name: string): boolean {
-  return kindOf(name, false) === 'image'
+/** 类型 → 图标着色（低调的单色，不给内容抢注意力） */
+export function fileIconTone(name: string, isDir: boolean): string {
+  const k = kindOf(name, isDir)
+  switch (k) {
+    case 'folder': return 'text-amber-600'
+    case 'image': return 'text-violet-600'
+    case 'video': return 'text-rose-600'
+    case 'audio': return 'text-emerald-600'
+    case 'archive': return 'text-orange-600'
+    case 'document': return 'text-blue-600'
+    case 'code': return 'text-cyan-700'
+    case 'apk': return 'text-lime-700'
+    case 'font': return 'text-fuchsia-600'
+    default: return 'text-[--color-ink-faint]'
+  }
 }
 
 /** 视频类 —— 与 EXT_MAP 的 video 段保持一致 */
