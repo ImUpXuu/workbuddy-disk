@@ -98,6 +98,7 @@ pnpm build              # 产物在 dist/，可直接丢给 Vercel
 | `GET` | `/api/share/<token>` | 公开查看分享内容（**免登录**） | — |
 | `GET` | `/api/share/<token>/download` | 公开下载（**免登录**） | — |
 | `GET` | `/api/share/<token>/thumbnail` | 公开缩略图（**免登录**） | — |
+| `PROPFIND`/`GET`/`PUT`/`DELETE`/`MKCOL`/`MOVE`/`COPY` | `/dav/...` | **WebDAV** 协议挂载（HTTP Basic Auth） | key |
 
 完整参数与 `curl` 示例见 [`backend/API使用说明.md`](./backend/API使用说明.md)。
 
@@ -128,6 +129,34 @@ curl "$BASE/api/share/<token>/download?path=photos/2024/a.jpg"
 
 > ⚠️ 分享链接是公开入口，发给别人即代表授权其访问对应内容；
 > 不再需要时请到「分享管理」页撤销。
+
+## WebDAV
+
+后端实现了标准 **WebDAV** 协议，可把整个网盘像本地磁盘一样挂载到
+Windows 资源管理器 / macOS Finder / rclone / Cyberduck 等客户端，
+直接拖拽读写，无需走网页。
+
+- 挂载点：`/dav/`（即存储根目录）
+- 鉴权：**HTTP Basic Auth**。用户名任意（如 `admin`），密码填
+  - 你的**登录密钥**（`NETDISK_KEY`，网页登录用的那串），或
+  - 任意一个 **API Key**（受 `allow_dangerous` 开关约束，与 REST API 一致）
+- 支持的方法：`OPTIONS` `PROPFIND` `GET` `HEAD` `PUT` `DELETE` `MKCOL`
+  `MOVE` `COPY` `PROPPATCH` `LOCK` `UNLOCK`，`GET` 支持 `Range` 断点续传。
+- 所有路径都过 `safe_path()` 前缀校验，杜绝 `../` 穿越。
+
+```bash
+# 能力探测（无需认证）
+curl -X OPTIONS "$BASE/dav/"
+
+# 列根目录（密码 = 登录密钥，用户名随意）
+curl -u "admin:$KEY" -X PROPFIND "$BASE/dav/" -H "Depth: 1"
+
+# 上传 / 下载
+curl -u "admin:$KEY" -X PUT  "$BASE/dav/hello.txt" -d "hi"
+curl -u "admin:$KEY"         "$BASE/dav/hello.txt"
+```
+
+> 网页端点开顶栏或侧栏的 **WebDAV** 按钮，可直接复制服务器地址与填法。
 
 ### 鉴权凭证
 

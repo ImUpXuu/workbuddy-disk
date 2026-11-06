@@ -18,6 +18,7 @@ import { api } from '../api/client'
 import { DEFAULT_UPLOAD_CHUNK_SIZE } from '../lib/uploadEngine'
 import { navigate } from '../lib/router'
 import { Button, Icon, ICONS } from '../components/ui'
+import WebDavModal from '../components/WebDavModal'
 import { humanSize } from '../lib/utils'
 
 const REFRESH_DEBOUNCE_MS = 400
@@ -27,6 +28,7 @@ export default function DiskPage() {
   const toast = useToast()
   const [path, setPath] = useState('')
   const [stats, setStats] = useState<{ files: number; dirs: number; size: number } | null>(null)
+  const [webdavOpen, setWebDavOpen] = useState(false)
 
   const uploading = useIsUploading()
   const { addFiles, configure, onTaskDone } = useUploadActions()
@@ -127,6 +129,14 @@ export default function DiskPage() {
 
         <div className="ml-auto flex items-center gap-1">
           <Button
+            onClick={() => setWebDavOpen(true)}
+            size="sm"
+            variant="ghost"
+            icon={<Icon d={ICONS.cloud} className="size-3.5" />}
+          >
+            WebDAV
+          </Button>
+          <Button
             onClick={() => navigate({ view: 'shares' })}
             size="sm"
             variant="ghost"
@@ -159,6 +169,14 @@ export default function DiskPage() {
           >
             <Icon d={ICONS.share} className="size-4 shrink-0" />
             分享管理
+          </button>
+          <button
+            type="button"
+            className="win-nav-item"
+            onClick={() => setWebDavOpen(true)}
+          >
+            <Icon d={ICONS.cloud} className="size-4 shrink-0" />
+            WebDAV 挂载
           </button>
 
           <p className="win-nav-group-title">当前位置</p>
@@ -195,6 +213,9 @@ export default function DiskPage() {
 
       {/* ═══ 上传进度面板 ═══ */}
       <UploadPanel />
+
+      {/* ═══ WebDAV 连接信息 ═══ */}
+      <WebDavModal open={webdavOpen} onClose={() => setWebDavOpen(false)} />
     </div>
   )
 }
