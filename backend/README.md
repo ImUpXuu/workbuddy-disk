@@ -200,6 +200,16 @@ curl "$BASE/api/share/<token>/download?path=photos/2024/a.jpg"
 - 所有路径都过 `safe_path()` 前缀校验，杜绝 `../` 穿越。
 - `Depth` 仅展开一层（含 `infinity`），避免超大响应。
 
+> **部署注意（重要）**：WebDAV 必须由「后端」直接对外提供，**不要**套在只托管前端静态页的
+> CDN / 网关后面：
+> - Vercel（`pan.upxuu.com` 等）只返回 SPA 的 `index.html`，没有 `/dav/` 路由，客户端会报
+>   “文件夹无效”。
+> - CloudStudio 预览网关（`*.app.workbuddy.host` 等）会**剥离 `Authorization` / `X-API-Key`
+>   请求头**，导致任何鉴权都失败（本地 `curl` 返回 207，经该网关必返回 401）。
+> - 后端若架在 Cloudflare 等代理后，需放行 `PROPFIND/PUT/LOCK` 等方法，且 Windows 资源管理器
+>   要求后端与目标之间是 HTTP/1.1（Windows 内置 WebDAV 客户端不支持 HTTP/2）。
+> 前端「WebDAV 连接」弹窗里的地址已自动取 `API_BASE`（后端域名），即「直连后端」的地址。
+
 ```bash
 # 列根目录（密码=登录密钥；用户名随意）
 curl -u "admin:$KEY" -X PROPFIND "$BASE/dav/" -H "Depth: 1"

@@ -7,6 +7,7 @@
 
 import { useState } from 'react'
 import { Button, Icon, ICONS, Modal } from './ui'
+import { API_BASE } from '../api/client'
 
 const CLIENTS: { name: string; steps: string }[] = [
   { name: 'Windows 资源管理器', steps: '地址栏输入地址 → 弹出登录框填用户名(任意)与密码 → 映射为网络驱动器' },
@@ -18,7 +19,10 @@ const CLIENTS: { name: string; steps: string }[] = [
 export default function WebDavModal({ open, onClose }: { open: boolean; onClose(): void }) {
   const [copied, setCopied] = useState<string | null>(null)
 
-  const url = `${window.location.origin}/dav/`
+  // WebDAV 由「后端」提供，必须指向后端域名（API_BASE），而不是前端的 Vercel 域名。
+  // 前端（如 pan.upxuu.com）只托管静态页面，没有 /dav/ 路由；套一层代理反而会让
+  // Windows 等客户端连不上。后端域名未配置时（同源调试）回退到当前站点。
+  const url = `${API_BASE || window.location.origin}/dav/`
 
   const copy = async (label: string, text: string) => {
     try {
@@ -57,6 +61,13 @@ export default function WebDavModal({ open, onClose }: { open: boolean; onClose(
       <div className="mt-3 rounded border border-[--color-line] bg-[--color-surface-alt] px-3 py-2 text-[11.5px] leading-relaxed text-[--color-ink-soft]">
         <Icon d={ICONS.info} className="mr-1 inline size-3.5 align-[-2px] text-[--color-accent]" strokeWidth={2} />
         密码即你登录本网的「访问密钥」；也可在「分享管理」页用 API Key 登录（受危险操作开关约束）。
+      </div>
+
+      <div className="mt-2 rounded border border-[--color-line] bg-[--color-surface-alt] px-3 py-2 text-[11.5px] leading-relaxed text-[--color-ink-soft]">
+        <Icon d={ICONS.info} className="mr-1 inline size-3.5 align-[-2px] text-[--color-accent]" strokeWidth={2} />
+        服务器地址是「后端直连地址」。若前端部署在 Vercel / Cloudflare / 预览网关（如
+        <code className="mx-1 font-mono">*.app.workbuddy.host</code>）等只托管静态页或会剥离鉴权头的代理后，
+        WebDAV 将无法挂载——需让客户端直连后端域名。
       </div>
 
       <div className="mt-3">
