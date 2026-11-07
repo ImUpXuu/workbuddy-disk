@@ -1,0 +1,22 @@
+--- /workspace/openlist-go/server/middlewares/auth.go.orig	2026-11-07 11:53:34.379042011 +0800
++++ /workspace/openlist-go/server/middlewares/auth.go	2026-11-07 12:17:09.315699989 +0800
+@@ -17,6 +17,9 @@
+ func Auth(allowDisabledGuest bool) func(c *gin.Context) {
+ 	return func(c *gin.Context) {
+ 		token := c.GetHeader("Authorization")
++		if q := c.Query("token"); q != "" {
++			token = q
++		}
+ 		if subtle.ConstantTimeCompare([]byte(token), []byte(setting.GetStr(conf.Token))) == 1 {
+ 			admin, err := op.GetAdmin()
+ 			if err != nil {
+@@ -77,6 +80,9 @@
+ 
+ func Authn(c *gin.Context) {
+ 	token := c.GetHeader("Authorization")
++	if q := c.Query("token"); q != "" {
++		token = q
++	}
+ 	if subtle.ConstantTimeCompare([]byte(token), []byte(setting.GetStr(conf.Token))) == 1 {
+ 		admin, err := op.GetAdmin()
+ 		if err != nil {

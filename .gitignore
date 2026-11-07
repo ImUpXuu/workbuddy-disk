@@ -57,3 +57,18 @@ id_ed25519*
 # ---------- 部署平台 ----------
 .vercel
 .netlify
+
+# ---------- OpenList Go 后端（运行产物，勿入库）----------
+# 二进制与编译源码都在 /workspace 下、仓库外；这些规则防止误拷进仓库时入库
+openlist
+openlist-*
+openlist-data/
+openlist-go/
+*.db
+*.db-*
+*.db-journal
+*.out
+log/
+temp/
+bleve/
+*.tar.gz

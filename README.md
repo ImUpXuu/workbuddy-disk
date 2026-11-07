@@ -1,269 +1,209 @@
-# workbuddy-disk
+# 网盘（OpenList Go 后端 + Vercel 前端）
 
-一个自托管的轻量网盘：**Flask 后端 + React 前端**，前后端分离，同一个仓库。
+一个自托管网盘：**OpenList 官方 Go 后端 + OpenList 官方 SolidJS 前端**，前后端分离部署，同一个仓库。
+前端只保留 UI 外壳，文件管理、分享、元信息、权限、WebDAV、多存储挂载、分片上传等能力全部由 Go 后端原生提供。
 
 | 目录 | 内容 | 部署位置 |
 | --- | --- | --- |
-| [`backend/`](./backend) | Flask 单文件后端，提供 JSON API + 一个内嵌网页版界面（兜底用） | 自有服务器 / 沙箱，监听 `:8000` |
-| [`frontend/`](./frontend) | Vite + React + Tailwind v4 单页应用 | [Vercel](https://vercel.com) → `pan.upxuu.com` |
+| [`frontend/`](./frontend) | OpenList 官方 SolidJS 前端 v4.2.9（仅少量网关/Vercel 兼容改动） | [Vercel](https://vercel.com) → `pan.upxuu.com` |
+| [`backend-openlist/`](./backend-openlist) | Go 后端的 `?token=` 补丁与一键编译脚本 | 不部署，仅供升级复用 |
+| [`backend/`](./backend) | 旧 Flask 后端（**已停用，仅留档**） | 不再启动 |
+
+后端实际运行体（二进制 + `data/`）在部署机的 `/workspace/netdisk`，不在本仓库内。
 
 ---
 
-## 架构
+## 架构与部署拓扑
 
 ```
-浏览器 ──── https://pan.upxuu.com ────┐
-                                      │  Vercel 托管静态资源
-                                      │
-        X-API-Key / ?token=           │  跨域请求（CORS）
-                                      ▼
-                        https://<后端域名>   Flask API
-                                      │
-                                      ▼
-                                  storage/  用户文件
+浏览器 ── https://pan.upxuu.com (Vercel 静态前端) ──┐
+                                                    │ 前端 JS 直连后端绝对域名（跨域）
+                                                    ▼
+              https://<后端域名>.app.workbuddy.host (CloudStudio 网关 :8000)
+                                                    │
+                                                    ▼
+              /workspace/netdisk/openlist (OpenList Go 后端)
+                    ├── openlist-data/data.db  用户/存储/元信息/分享
+                    └── 本地存储 / 挂载的其他网盘驱动
 ```
 
-前端与后端**不同源**，因此所有请求都是跨域：
-
-- 后端放行 `OPTIONS` 预检，并回显白名单内的 `Origin`
-- 凭证优先走 `X-API-Key` 请求头（key 存在 `localStorage`）
-- 次选 `?token=` 查询参数，兼容不支持自定义头的场景
-- Cookie 通道保留，但跨站场景（`SameSite=Lax`）不作为主通道
+- 前端静态资源由 Vercel 托管，`vercel.json` 把任意路径 rewrite 到 `/index.html`（history 模式 SPA fallback）。
+- 前端通过 `.env.production` 的 `VITE_API_URL` 注入后端**绝对域名**，`request.ts` 里 `baseURL = api + "/api"`。
+- 后端 CORS 三项均为 `["*"]`，`withCredentials: false`，跨域请求放行。
+- Vercel 侧**收不到 `/api` 流量**，因此不需要为 `/api` 开 rewrite 例外、也不要把 `/api` 代理到后端。
 
 ---
 
-## 快速开始
+## 为什么用 `?token=`（网关兼容，query 优先）
 
-### 后端
+实测 CloudStudio 预览网关的行为不是"剥离头"，而是**把 `Authorization` 请求头覆盖成它自己的一个失效 token**：
+本地直连带 `Authorization` 或 `?token=` 都 200，但经网关时无论带头、带 `?token=`、甚至完全不带凭证，
+都返回 `{"code":401,"message":"token is invalidated"}`。同时**任意 query 参数都能可靠透传**
+（`/api/public/settings?任意key=值` 全部 200）。
 
-```bash
-cd backend
-pip install -r requirements.txt
+而 OpenList Go 后端 `server/middlewares/auth.go` 的 `Auth` / `Authn` 只读
+`c.GetHeader("Authorization")`，拿到网关覆盖的失效头就必然 401。
 
-# 必改：登录密钥与 CORS 白名单
-export NETDISK_KEY='your-strong-key'
-export NETDISK_CORS_ORIGINS='https://pan.upxuu.com,http://localhost:5173'
+因此做了两处最小改动（见 [`backend-openlist/patches/token-from-query.patch`](./backend-openlist/patches/token-from-query.patch)）：
 
-python3 app.py          # 或 ./run.sh
+| 侧 | 改动 |
+| --- | --- |
+| 后端 | `server/middlewares/auth.go` 的 `Auth` / `Authn` 两处各加 3 行：`if q := c.Query("token"); q != "" { token = q }`——**query 优先覆盖头**（不能写成"仅头为空才读 query"，因为网关塞的头非空）；`server/handles/auth.go` 的 `LogOut` 同样兼容 |
+| 前端 | `src/utils/request.ts` 请求拦截器把 `localStorage.token` 注入 `config.params`，axios 自动序列化成 `?token=` |
+
+`Authorization` 默认头保留不改（本地直连仍可用），但后端以 `?token=` 为准，因此经网关也能正确鉴权。
+OpenList 的业务错误是 **HTTP 200 + body `{code,message,data}`**，由 `handle_resp.ts` 按 `resp.code` 判断（含 401 跳登录），不受影响。
+
+---
+
+## 联调实测结论（2026-11-07）
+
+以生产构建前端（`VITE_API_URL` 指向网关绝对域名）+ 沙箱 Go 后端 + CloudStudio 网关实跑，全链路通过：
+
+| 环节 | 实测结果 |
+| --- | --- |
+| 网关鉴权 | 本地 / 经网关 `GET /api/me?token=` 均 `200 admin`；经网关不带 token 返回 `401 token is invalidated` |
+| CORS 预检 | `OPTIONS` 经网关返回 `204`，`allow-origin/headers/methods = *` |
+| 列目录 | `POST /api/fs/list?token=` 经网关 `200`，正确返回根目录文件与中文目录 |
+| 普通上传 | `PUT /api/fs/put?token=` + `File-Path` 头经网关 `200`，文件正确落地 |
+| 分片上传 | 11 MB / 两片经网关 `init → chunk×2 → complete` 全 `200`，sha256 一致；`abort` / 状态查询 / 重传正常 |
+| 预览下载 | `POST /api/fs/get?token=` `200` → 签发 `/p/hello.txt?sign=...` → 经网关 `200` 返回文件正文 |
+| 浏览器 E2E | 登录 → `localStorage.token` 落库 → 列表渲染 5 个对象、进入子路由 `/hello.txt` 预览显示正文；**零 console 错误、零失败请求** |
+
+> **下载为何不需要 token**：OpenList 的 `/d/`、`/p/` 下载路由走后端签发的 `sign` 查询参数
+> （由 `fs/get` 用 `?token=` 鉴权后返回），不依赖 `Authorization` 头，因此天然免疫网关覆盖头。
+> 结论：**只需为 `/api` 请求注入 `?token=`**，下载 / 预览链接保持官方原样即可。
+
+**本地存储挂载**：OpenList 初始数据库不含任何 storage，必须先挂一个驱动，否则
+`POST /api/fs/list` 返回 `storage not found; please add a storage first`。
+管理页 **存储 → 添加**，或调用 `POST /api/admin/storage/create`（`driver=Local`，
+`mount_path=/`，`addition={"root_folder_path":"<数据目录>",...}`）。挂载后 `/api/fs/list` 即正常。
+完整版 Go 二进制全量导入 drivers，可继续挂载对象存储 / OneDrive / 115 / 阿里云盘 / WebDAV / S3 等。
+
+**默认设置清理**：首次启动的 `site_title=OpenList` 与欢迎公告属默认值，已通过
+`POST /api/admin/setting/save` 改为「我的网盘」并清空公告；这些是数据库运行数据，不入库。
+
+---
+
+## 管理员与登录
+
+- 初始化（v4.2.9）：**不要**先跑 `admin set`——首次无 admin 用户时它会报 `record not found`。
+  正确做法是首次启动带环境变量（用户名固定 `admin`）：
+  ```bash
+  OPENLIST_ADMIN_PASSWORD='<密码>' ./openlist server --data <data>
+  ```
+  日志出现 `Successfully created the admin user` 即成功，数据库 `x_users` 出现 `admin`。
+  平台启动命令固化在 `/workspace/.cloudstudio`（仓库外，含明文密码、权限 600、不入库）。
+- 已有 admin 时该环境变量被忽略；改密可用 `admin set '<新密码>'`。
+- 登录：前端 `POST /api/auth/login/hash`，密码按 `sha256(pwd + "-https://github.com/alist-org/alist")` 做静态 hash，返回 `data.token`（JWT，HS256）。
+- **重启需重新登录**：JWT 校验用纯内存 `validTokenCache`（`server/common/auth.go`），后端每次重启后已签发 JWT 全部失效。
+- `?token=` 会让 JWT 出现在 URL、日志与 Referer 中；生产环境请勿公开后端日志，必要时在 `config.json` 的 `privacy_regs` 追加 `token=` 脱敏。
+
+---
+
+## 分片上传（原生能力，零改动）
+
+Go 后端原生提供 `/api/fs/multipart/{init,chunk,complete,status,abort}`，默认
+`multipart_enabled=true`、`multipart_chunk_size=10`（MB），二者都是 PUBLIC 设置，可在管理页
+**设置 → 流量** 修改。前端 `src/pages/home/uploads/uploads.ts` 的默认上传器即 `Multipart`。
+
+- 文件 ≤ `multipart_chunk_size`、或 `init` 返回 `data:null`（驱动不支持会话分片）时自动回退 `StreamUpload`。
+- 上传对话框**不要勾选 sidecars**，否则 `effectiveUploader()` 会强制切到 Stream。
+- **实测（2026-11-07）**：CloudStudio 网关**只覆盖 `Authorization` 头**，其余自定义头
+  （`File-Path` / `X-Upload-Id` / `X-Chunk-Index` / `X-File-Size` / `X-Chunk-Size` / `Overwrite` 等）
+  与 query 参数全部可靠透传 → 原生 multipart 协议可直接使用，**无需** query→Header 还原补丁。
+- 端到端实测：11 MB 文件（10 MB + 1 MB 两片）经网关 `init → chunk×2 → complete` 全部 `200`，
+  落地文件大小与 **sha256 完全一致**；`abort`、状态查询、重传路径亦正常。
+  后端对每片长度有严格校验（少发会返回 `incomplete chunk ... EOF` 并拒绝 `complete`）。
+- 网关若有请求体大小上限，把 `multipart_chunk_size` 调小（如 2 / 4 MB）即可。
+
+---
+
+## 挂载其他网盘（原生能力）
+
+管理页 **存储 → 添加**，从 90+ 驱动中选择（本地存储、对象存储、OneDrive、115、阿里云盘、
+WebDAV、S3、SMB、FTP…）。使用官方**完整版**二进制 / 编译产物（非 lite，lite 只影响内嵌前端资源）。
+编译产物由 `cmd/root.go` 的 `_ "github.com/OpenListTeam/OpenList/v4/drivers"` 全量导入所有驱动。
+
+---
+
+## Vercel 部署与配置注入
+
+`frontend/vercel.json`：
+
+```json
+{
+  "framework": "vite",
+  "installCommand": "pnpm install",
+  "buildCommand": "pnpm build",
+  "outputDirectory": "dist",
+  "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }]
+}
 ```
 
-默认监听 `0.0.0.0:8000`。启动后直接访问 `http://localhost:8000` 就是内嵌网页版。
+在 Vercel 项目环境变量设置（与 `frontend/.env.production` 同值）：
 
-### 前端
+```
+VITE_API_URL = https://<后端域名>.app.workbuddy.host
+```
+
+- **不带尾斜杠、不带 `/api`**（`request.ts` 会拼 `/api`）。
+- **绝不能写 `"/"`**：`config.ts` 里 `api === "/"` 会回退到 `location.origin`，请求错发到 Vercel 自己。
+- `index.html` 中 `window.OPENLIST_CONFIG.cdn` 与 `window.__dynamic_base__` **必须保持空字符串**，
+  绝不能设成 `"/"`——会拼出 `//assets/x.js` 协议相对 URL 导致白屏。
+- `index.html` 的 `window.OPENLIST_CONFIG.api` 保持 `undefined`，作为部署期可覆盖的注入点。
+
+---
+
+## 本地开发
 
 ```bash
+# 后端（Go，监听 8000）
+cd /workspace/netdisk
+# 首次（无 admin）用环境变量创建，不能先 admin set
+OPENLIST_ADMIN_PASSWORD='<密码>' ./openlist server --data /workspace/netdisk/openlist-data
+# 之后正常启动：
+# ./openlist server --data /workspace/netdisk/openlist-data
+
+# 前端（走同源 dev proxy 到 :8000）
 cd frontend
 pnpm install
-
-# 指向后端地址
-echo 'VITE_API_BASE=http://localhost:8000' > .env.local
-
-pnpm dev                # http://localhost:5173
-pnpm build              # 产物在 dist/，可直接丢给 Vercel
+DEV_PROXY_TARGET=http://127.0.0.1:8000 pnpm dev
 ```
 
-### 部署到 Vercel
+`config.json` 关键字段（`<data>/config.json`）：
 
-1. Import 仓库，**Root Directory 选 `frontend`**
-2. Framework Preset 自动识别为 Vite
-3. 环境变量加 `VITE_API_BASE=https://<你的后端域名>`
-4. 绑定域名 `pan.upxuu.com`
-5. 把该域名加进后端的 `NETDISK_CORS_ORIGINS`
+```json
+{
+  "force_https": false,
+  "site_url": "https://<后端域名>.app.workbuddy.host",
+  "scheme": { "address": "0.0.0.0", "http_port": 8000, "https_port": -1 },
+  "cors": { "allow_origins": ["*"], "allow_methods": ["*"], "allow_headers": ["*"] },
+  "dist_dir": "<占位目录>/public/dist"
+}
+```
 
----
-
-## 主要接口
-
-| 方法 | 路径 | 说明 | 需登录 |
-| --- | --- | --- | --- |
-| `POST` | `/api/login` | 用登录密钥换 token | — |
-| `GET` | `/api/list?path=` | 列目录 | ✓ |
-| `GET` | `/api/download?path=` | 下载文件（支持 `Range`） | ✓ |
-| `POST` | `/api/mkdir` | 新建文件夹 | ✓ |
-| `POST` | `/api/rename` | 重命名 / 移动 | ✓ |
-| `POST` | `/api/delete` | 删除 | ✓ |
-| `POST` | `/api/upload/init` | 初始化分片上传 | ✓ |
-| `POST` | `/api/upload/chunk` | 上传分片 | ✓ |
-| `POST` | `/api/upload/complete` | 合并分片 | ✓ |
-| `GET` | `/api/settings` | 读取设置 | ✓ |
-| `POST` | `/api/settings` | 保存设置 | ✓ |
-| `GET` | `/api/apikeys` | API Key 列表 | ✓ |
-| `POST` | `/api/apikeys` | 新建 API Key | ✓ |
-| `PATCH` | `/api/apikeys/<id>` | 改名 / 启停 | ✓ |
-| `DELETE` | `/api/apikeys/<id>` | 删除 API Key | ✓ |
-| `GET` | `/api/shares` | 列出全部分享（管理） | ✓ |
-| `POST` | `/api/shares` | 新建分享（`path` / `expires_days`） | ✓ |
-| `PATCH` | `/api/shares/<id>` | 启停 / 改有效期 | ✓ |
-| `DELETE` | `/api/shares/<id>` | 撤销分享 | ✓ |
-| `GET` | `/api/share/<token>` | 公开查看分享内容（**免登录**） | — |
-| `GET` | `/api/share/<token>/download` | 公开下载（**免登录**） | — |
-| `GET` | `/api/share/<token>/thumbnail` | 公开缩略图（**免登录**） | — |
-| `PROPFIND`/`GET`/`PUT`/`DELETE`/`MKCOL`/`MOVE`/`COPY` | `/dav/...` | **WebDAV** 协议挂载（HTTP Basic Auth） | key |
-
-完整参数与 `curl` 示例见 [`backend/API使用说明.md`](./backend/API使用说明.md)。
+- `http_port` 必须为 **8000**（平台网关固定暴露该端口）。
+- `site_url` **不要带子路径**，否则 `conf.URL.Path` 会给所有 API 路径加一层前缀。
+- `dist_dir` 指向占位目录即可跳过内嵌前端（前后端分离，前端由 Vercel 提供）。
 
 ---
 
-## 分享链接
+## 升级复用
 
-把任意目录或文件变成一条**免登录**即可打开的公开链接。数据模型参考 OpenList 的
-`Share`（密码 / 访问次数上限 / 说明 / 排序）。
+`backend-openlist/build.sh` 会对指定版本的 Go 源码重新打 `?token=` 补丁并编译：
 
 ```bash
-# 分享某个目录（返回 token 与公开链接 /#/s/<token>）
-curl -X POST "$BASE/api/shares" -H "X-API-Key: $KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"path":"photos/2024","expires_days":0,"pwd":"s123","max_accessed":100,
-       "remark":"给客户","readme":"目录说明","header":"置顶公告","order_by":"size","order_direction":"desc"}'
-
-# 任何人拿链接都能直接看（有密码时带 ?pwd=）
-curl "$BASE/api/share/<token>?pwd=s123"
-curl "$BASE/api/share/<token>/download?path=photos/2024/a.jpg&pwd=s123"
+bash backend-openlist/build.sh v4.2.9     # 省略版本默认 v4.2.9
 ```
 
-新建 / 编辑（`POST /api/shares`、`PATCH /api/shares/<id>`）可用字段：
-
-| 字段 | 说明 |
-|---|---|
-| `path` | 要分享的文件或目录（相对存储根） |
-| `expires_days` | 有效天数，`0` 永不过期 |
-| `id` | 自定义短链 ID（可选，不填自动生成） |
-| `pwd` | 访问密码；非空时查看 / 下载 / 缩略图都要带 `?pwd=` |
-| `max_accessed` | 最大访问次数，`0` 不限；打开分享根累计一次，达到即失效 |
-| `remark` / `readme` / `header` | 备注 / 目录说明 / 置顶公告（前端展示用） |
-| `order_by` | 列表排序：`name` / `size` / `mtime` / `none` |
-| `order_direction` | `asc` / `desc` |
-
-- 目录分享覆盖整个子树；文件分享只暴露那一个文件。
-- 链接即凭证：`token` 是 URL 里唯一的保密要素，泄露等同于内容泄露，
-  因此服务端**明文存储**（与 API Key 的哈希存储不同）。
-- 过期 / 停用 / 撤销 / 访问次数用尽都立即 404；密码错误返回 `401 + need_password`。
-- 范围校验：下载与缩略图都过 `share_allows()` + 密码校验，越权直接拒绝。
-- 前端用 **hash 路由**（如 `#/d/photos/2024`、`#/s/<token>`），服务端永远只服务 `/`。
-
-> ⚠️ 分享链接是公开入口，发给别人即代表授权其访问对应内容；
-> 不再需要时请到「分享管理」页撤销。
-
-## 权限管理 / 游客可见目录 / 元信息
-
-采用**单主人 + 匿名游客**模型（不做多用户账号）。核心是「目录元信息（meta）」——
-参考 OpenList 的 `Meta`：按路径给目录配置访问规则，规则可递归作用于子树。
-
-> 数据存储：`.config/metas.json`（权限 600）。规则按路径深度「最具体优先」，
-> 逐字段「首次命中锁定」，因此能给子目录单独设 `guest_read=false` 关闭开放。
-
-### 元信息规则字段
-
-| 字段 | 说明 |
-|---|---|
-| `path` | 规则作用的目录（相对存储根，空串 = 全盘根规则） |
-| `guest_read` | **是否对游客开放**（默认全盘关闭） |
-| `guest_read_sub` | 开放是否递归到子目录（默认 `true`） |
-| `password` | 该目录的访问密码（游客需带 `?pwd=`） |
-| `write` / `write_sub` | 预留的游客写权限开关 |
-| `hide` | 隐藏文件正则（每行一个），对列目录和直接下载都生效 |
-| `readme` / `header` | 目录说明 / 置顶公告 |
-| `p_sub`/`h_sub`/`r_sub`/`header_sub` | 密码 / 隐藏 / 说明 / 公告是否递归 |
-
-### 管理接口（需鉴权）
-
-```bash
-curl -H "X-API-Key: $KEY" "$BASE/api/metas"                    # 列出全部规则
-curl -X POST -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
-  -d '{"path":"public","guest_read":true,"password":"abc","hide":"^_"}' \
-  "$BASE/api/metas"                                              # 新建/更新(id=0 新建, 带 id 编辑)
-curl -X DELETE -H "X-API-Key: $KEY" "$BASE/api/metas/1"        # 删除
-curl -H "X-API-Key: $KEY" "$BASE/api/metas/effect?path=public/x"  # 调试: 查看某路径生效的约束
-```
-
-### 游客公开浏览（免登录）
-
-默认游客看不到任何东西；只有被 `guest_read` 标记的目录及其子树可访问。
-密码随每次请求以 `?pwd=` 或 `X-Guest-Pwd` 头传递，服务端无状态。
-
-```bash
-curl "$BASE/api/public/roots"                       # 游客落地页: 列出开放的顶层入口
-curl "$BASE/api/public/list?path=public&pwd=abc"   # 列目录(应用 hide/readme/header)
-curl "$BASE/api/public/file?path=public/a.txt&download=1&pwd=abc"  # 下载
-curl "$BASE/api/public/thumbnail?path=public/a.jpg&pwd=abc"        # 缩略图
-```
-
-- 未开放目录 → `403`；需要密码 → `401 + need_password`。
-- `hide` 正则同时过滤列目录与「按名字直接下载」，避免绕过。
-- 已登录主人走原有 `/api/list` 等接口，不受这些规则限制。
-
-## WebDAV
-
-后端实现了标准 **WebDAV** 协议，可把整个网盘像本地磁盘一样挂载到
-Windows 资源管理器 / macOS Finder / rclone / Cyberduck 等客户端，
-直接拖拽读写，无需走网页。
-
-- 挂载点：`/dav/`（即存储根目录）
-- 鉴权：**HTTP Basic Auth**。用户名任意（如 `admin`），密码填
-  - 你的**登录密钥**（`NETDISK_KEY`，网页登录用的那串），或
-  - 任意一个 **API Key**（受 `allow_dangerous` 开关约束，与 REST API 一致）
-- 支持的方法：`OPTIONS` `PROPFIND` `GET` `HEAD` `PUT` `DELETE` `MKCOL`
-  `MOVE` `COPY` `PROPPATCH` `LOCK` `UNLOCK`，`GET` 支持 `Range` 断点续传。
-- 所有路径都过 `safe_path()` 前缀校验，杜绝 `../` 穿越。
-
-```bash
-# 能力探测（无需认证）
-curl -X OPTIONS "$BASE/dav/"
-
-# 列根目录（密码 = 登录密钥，用户名随意）
-curl -u "admin:$KEY" -X PROPFIND "$BASE/dav/" -H "Depth: 1"
-
-# 上传 / 下载
-curl -u "admin:$KEY" -X PUT  "$BASE/dav/hello.txt" -d "hi"
-curl -u "admin:$KEY"         "$BASE/dav/hello.txt"
-```
-
-> 网页端点开顶栏或侧栏的 **WebDAV** 按钮，可直接复制服务器地址与填法。
-
-### 鉴权凭证
-
-三种通道，按优先级：
-
-1. **API Key**（推荐给前端与外部程序）
-   ```
-   X-API-Key: ndk_xxxxxxxx_yyyyyyyyyyyyyyyy
-   ```
-   或 `?apikey=ndk_...`。key 在设置页创建，服务端只存 `sha256` 哈希。
-
-2. **登录 Token**
-   ```
-   ?token=<expire_ts>.<base64url_sig>
-   ```
-   或 `Authorization: Bearer <token>`（注意：某些反向代理会覆写该头）。
-
-3. **Cookie** `netdisk_token`，仅同源场景可靠。
+补丁落点固定为 `server/middlewares/auth.go` 的 `Auth` / `Authn` 两处（及可选的 `LogOut`）。
+编译需要 Go ≥ `go.mod` 要求（v4.2.9 为 `go 1.26.0` / `toolchain go1.27.3`）与 gcc（CGO，sqlite 驱动）。
 
 ---
 
-## 环境变量
+## 历史
 
-| 变量 | 默认 | 说明 |
-| --- | --- | --- |
-| `NETDISK_KEY` | `change-me` | 网页登录密钥，**务必修改** |
-| `NETDISK_CORS_ORIGINS` | 内置白名单 | 允许的跨域来源，逗号分隔；支持 `*` |
-| `NETDISK_PORT` | `8000` | 监听端口 |
-| `NETDISK_HOST` | `0.0.0.0` | 监听地址 |
-| `NETDISK_TOKEN_TTL` | `604800` | Token 有效期（秒），默认 7 天 |
-| `NETDISK_MAX_UPLOAD_MB` | `2048` | 单文件大小上限（MB） |
-| `NETDISK_CHUNK_MB` | `48` | 分片大小（MB） |
-
----
-
-## 安全设计
-
-- **API Key** 明文只在创建时返回一次，磁盘仅存 `sha256("netdisk-apikey:" + secret)`
-- **Token** 为 `HMAC-SHA256` 签名，密钥进程启动时随机生成 → 重启即全部失效
-- **危险操作**（删除 / 重命名 / 新建文件夹）可被设置项一键禁用，API Key 亦可单独限制
-- **路径穿越**已做 `resolve()` 校验，越界一律 403
-- **用户数据**（`storage/`）、**配置与 Key 哈希**（`.config/`）均在 `.gitignore` 中，不会入库
-
----
-
-## License
-
-MIT
+`backend/app.py`（Flask）与旧 React 前端是本项目早期实现，现已停用，仅保留在 git 历史与
+切换前的备份快照中。当前后端改用 OpenList 官方 Go 实现后，之前自研的分享 / 元信息 /
+访客 / WebDAV / 兼容层均由 OpenList 原生能力取代。

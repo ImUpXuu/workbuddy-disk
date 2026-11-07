@@ -13,7 +13,14 @@ const instance = axios.create({
 
 instance.interceptors.request.use(
   (config) => {
-    // do something before request is sent
+    // CloudStudio 网关会把 Authorization 请求头覆盖成它自己的失效 token，
+    // 但 query 参数能可靠透传。后端 server/middlewares/auth.go 已改为
+    // 「?token= 有值就优先覆盖头」（网关塞的头非空，不能用"仅头为空才读 query"），
+    // 故把登录 token 同时塞进 params，保证经网关直连时仍能鉴权（本地直连仍可用头）。
+    const token = localStorage.getItem("token")
+    if (token) {
+      config.params = { ...(config.params || {}), token }
+    }
     return config
   },
   (error) => {
