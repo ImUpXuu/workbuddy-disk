@@ -511,7 +511,7 @@ def _save_shares(items: list) -> None:
 
 
 def _share_is_active(rec: dict, now: int = 0) -> bool:
-    """启用中且未过期。now=0 时取当前时间（写成参数方便测试）。"""
+    """启用中、未过期、且未达到最大访问次数。now=0 时取当前时间。"""
     if not now:
         now = int(time.time())
     if not rec.get("enabled", True):
@@ -519,11 +519,14 @@ def _share_is_active(rec: dict, now: int = 0) -> bool:
     exp = int(rec.get("expires_at", 0) or 0)
     if exp and exp < now:
         return False
+    limit = int(rec.get("max_accessed", 0) or 0)
+    if limit and int(rec.get("accessed", 0) or 0) >= limit:
+        return False
     return True
 
 
 def find_share(token: str) -> dict | None:
-    """按 token 找**有效**分享；无效/停用/过期一律返回 None。"""
+    """按 token 找**有效**分享；无效/停用/过期/次数用尽一律返回 None。"""
     token = (token or "").strip()
     if not token:
         return None
@@ -531,6 +534,36 @@ def find_share(token: str) -> dict | None:
         if hmac.compare_digest(str(rec.get("token", "")), token) and _share_is_active(rec):
             return rec
     return None
+
+
+def _share_pwd_ok(rec: dict) -> bool:
+    """
+    校验分享访问密码（OpenList 的 pwd 语义）。
+
+    密码取自 ?pwd= / X-Share-Pwd 头 / JSON body 的 pwd 字段；无密码的分享恒通过。
+    返回 False 时调用方应回 401 + need_password，让前端弹密码框。
+    """
+    want = str(rec.get("pwd") or "")
+    if not want:
+        return True
+    got = (
+        request.args.get("pwd")
+        or request.headers.get("X-Share-Pwd")
+        or ((request.get_json(silent=True) or {}).get("pwd") if request.is_json else None)
+        or ""
+    )
+    return hmac.compare_digest(str(got), want)
+
+
+def _share_bump(rec: dict) -> None:
+    """访问计数 +1（持久写回 shares.json）。调用方自行决定何时算一次访问。"""
+    items = load_shares()
+    for r in items:
+        if r.get("id") == rec.get("id"):
+            r["accessed"] = int(r.get("accessed", 0) or 0) + 1
+            rec["accessed"] = r["accessed"]
+            _save_shares(items)
+            return
 
 
 def share_allows(rec: dict, abs_target: Path) -> bool:
@@ -564,11 +597,28 @@ def public_share_view(rec: dict) -> dict:
         "expires_h": "永不过期" if not exp else _fmt_ts(exp),
         "expired": bool(exp and exp < now),
         "active": active,
+        # OpenList 兼容字段
+        "has_pwd": bool(rec.get("pwd")),
+        "max_accessed": int(rec.get("max_accessed", 0) or 0),
+        "accessed": int(rec.get("accessed", 0) or 0),
+        "remark": rec.get("remark", ""),
+        "readme": rec.get("readme", ""),
+        "header": rec.get("header", ""),
+        "order_by": rec.get("order_by", "name"),
+        "order_direction": rec.get("order_direction", "asc"),
+        "extract_folder": rec.get("extract_folder", "none"),
     }
 
 
-def create_share(rel: str, expires_days: int = 0) -> dict:
-    """新建分享，返回完整记录。rel 必须指向已存在的文件或目录。"""
+def create_share(rel: str, spec: dict | None = None) -> dict:
+    """
+    新建分享，返回完整记录。rel 必须指向已存在的文件或目录。
+
+    spec 可选，承载 OpenList 式分享属性：
+      pwd / max_accessed / remark / readme / header / order_by / order_direction /
+      extract_folder / expires_days / enabled / id(自定义短链)
+    """
+    spec = spec or {}
     target = safe_path(rel)
     if target == STORAGE_ROOT:
         raise ValueError("不能分享根目录")
@@ -576,20 +626,171 @@ def create_share(rel: str, expires_days: int = 0) -> dict:
         raise FileNotFoundError("目标不存在")
 
     now = int(time.time())
-    days = max(0, int(expires_days or 0))
+    days = max(0, int(spec.get("expires_days") or 0))
+    try:
+        custom_id = (spec.get("id") or "").strip()
+    except Exception:  # noqa: BLE001
+        custom_id = ""
     rec = {
-        "id": _rand_id(12),
+        "id": custom_id or _rand_id(12),
         "token": secrets.token_urlsafe(24),
         "path": rel_of(target),
         "is_dir": target.is_dir(),
-        "enabled": True,
+        "enabled": bool(spec.get("enabled", True)),
         "created_at": now,
         "expires_at": now + days * 86400 if days else 0,
+        # OpenList 兼容字段
+        "pwd": str(spec.get("pwd") or ""),
+        "max_accessed": max(0, int(spec.get("max_accessed") or 0)),
+        "accessed": 0,
+        "remark": str(spec.get("remark") or ""),
+        "readme": str(spec.get("readme") or ""),
+        "header": str(spec.get("header") or ""),
+        "order_by": str(spec.get("order_by") or "name"),
+        "order_direction": str(spec.get("order_direction") or "asc"),
+        "extract_folder": str(spec.get("extract_folder") or "none"),
     }
     items = load_shares()
+    if custom_id and any(r.get("id") == custom_id for r in items):
+        raise ValueError("自定义 ID 已存在")
     items.append(rec)
     _save_shares(items)
     return rec
+
+
+# ---------------------------------------------------------------------------
+# 目录元信息 / 游客可见目录 / 权限（参考 OpenList Meta 模型，单主人 + 匿名游客）
+# ---------------------------------------------------------------------------
+#
+# 设计说明（对照 OpenList）：
+#   - OpenList 的 Meta 是「按路径生效的规则」，可设目录访问密码、可见/可写用户、
+#     隐藏文件、目录说明(readme)、置顶说明(header)，且每条规则可递归作用于子目录。
+#   - 我们只有「主人」与「匿名游客」两种身份（不做多用户账号），因此把 OpenList 的
+#     read_users / write_users（用户 id 列表）收敛为 guest_read / write 两个布尔，
+#     语义即「是否允许匿名游客读 / 写」。password / hide / readme / header / *_sub 原样保留。
+#   - 「游客可查看的目录」= 给某路径建一条 guest_read=true 的 meta 规则（可再设 password）。
+#     匿名请求 /api/fs/list?path=<该路径> 时，后端按规则放行并施加密码/隐藏约束。
+#   - 规则按路径深度排序，最深的优先（就近覆盖）；递归由各自 *_sub 控制。
+#   - 存储：.config/metas.json，权限 600，结构与 shares.json 同目录。
+
+METAS_FILE = CONFIG_DIR / "metas.json"
+_METAS_LOCK = threading.Lock()
+
+
+def load_metas() -> list:
+    with _METAS_LOCK:
+        data = _json_read(METAS_FILE, [])
+    return data if isinstance(data, list) else []
+
+
+def _save_metas(items: list) -> None:
+    with _METAS_LOCK:
+        _json_write(METAS_FILE, items)
+
+
+def _norm_meta(m: dict) -> dict:
+    """补全 meta 字段默认值，并把 path 归一为相对存储根、无首尾斜杠的串。"""
+    rel = (m.get("path") or "").strip().strip("/")
+    return {
+        "id": int(m.get("id") or 0),
+        "path": rel,
+        "password": str(m.get("password") or ""),
+        "guest_read": bool(m.get("guest_read", False)),
+        # 可见性/密码/隐藏/说明默认递归到子树（更符合「开放一个目录」的直觉）；
+        # 写权限默认不递归（更稳妥，避免误开整棵子树）。
+        "guest_read_sub": bool(m.get("guest_read_sub", True)),
+        "write": bool(m.get("write", False)),
+        "write_sub": bool(m.get("write_sub", False)),
+        "hide": str(m.get("hide") or ""),
+        "readme": str(m.get("readme") or ""),
+        "header": str(m.get("header") or ""),
+        "p_sub": bool(m.get("p_sub", True)),
+        "h_sub": bool(m.get("h_sub", True)),
+        "r_sub": bool(m.get("r_sub", True)),
+        "header_sub": bool(m.get("header_sub", True)),
+    }
+
+
+def save_meta(m: dict) -> dict:
+    """新建或更新一条 meta 规则。id=0 视为新建。"""
+    items = load_metas()
+    norm = _norm_meta(m)
+    if norm["id"]:
+        rec = next((x for x in items if x.get("id") == norm["id"]), None)
+        if rec is None:
+            raise KeyError("meta 不存在")
+        rec.update(norm)
+    else:
+        nid = max([x.get("id", 0) for x in items], default=0) + 1
+        norm["id"] = nid
+        items.append(norm)
+    _save_metas(items)
+    return norm
+
+
+def delete_meta(mid: int) -> bool:
+    items = load_metas()
+    left = [x for x in items if x.get("id") != mid]
+    if len(left) == len(items):
+        return False
+    _save_metas(left)
+    return True
+
+
+def _meta_depth(m: dict) -> int:
+    p = (m.get("path") or "").strip("/")
+    return len(p.split("/")) if p else -1
+
+
+def meta_effect(target_rel: str) -> dict:
+    """
+    汇总某路径生效的 meta 约束，供游客浏览鉴权使用。
+
+    返回 {guest_read, write, password, hide, readme, header}。
+    规则按路径深度降序（最具体的优先）；某字段仅在「精确命中」或「开启了对应 *_sub
+    且是祖先」时才生效，从而支持「父目录开递归、子目录精确覆盖」。
+    """
+    rel = (target_rel or "").strip().strip("/")
+    eff = {
+        "guest_read": False,
+        "write": False,
+        "password": "",
+        "hide": "",
+        "readme": "",
+        "header": "",
+    }
+    # 逐字段「首次命中锁定」：规则按深度降序处理，最具体的规则先决定某字段，
+    # 之后更浅的祖先规则不再覆盖。这样「父目录开递归开放、子目录精确规则
+    # 设 guest_read=False 关闭可见」能正确生效。
+    decided = set()
+    for m in sorted(load_metas(), key=_meta_depth, reverse=True):
+        p = (m.get("path") or "").strip("/")
+        is_self = (p == rel)
+        is_root = (p == "")               # 根规则作用于全盘
+        is_anc = (not is_self) and (is_root or rel.startswith(p + "/"))
+        if not (is_self or is_anc):
+            continue
+        # 布尔字段：精确命中必决定；祖先规则仅当开启了对应 *_sub 才向下传递
+        for field, sub in (("guest_read", "guest_read_sub"), ("write", "write_sub")):
+            if field in decided:
+                continue
+            applies = is_self or is_root or (is_anc and m.get(sub))
+            if applies:
+                eff[field] = bool(m.get(field))
+                decided.add(field)
+        # 文本字段：非空才决定（空 = 继承更浅规则）
+        for field, sub in (
+            ("password", "p_sub"), ("hide", "h_sub"),
+            ("readme", "r_sub"), ("header", "header_sub"),
+        ):
+            if field in decided:
+                continue
+            applies = is_self or is_root or (is_anc and m.get(sub))
+            val = str(m.get(field) or "")
+            if applies and val:
+                eff[field] = val
+                decided.add(field)
+    return eff
 
 
 # ---------------------------------------------------------------------------
@@ -1017,6 +1218,11 @@ def _auth_guard():
     # 公开分享接口：凭链接里的 token 访问，免登录。
     # 注意用带斜杠的前缀，这样复数形的管理接口 /api/shares 不会被误放行。
     if path.startswith("/api/share/"):
+        return None
+
+    # 游客公开浏览（游客可见目录）：凭 meta 规则自管鉴权，免登录。
+    # 用带斜杠前缀，管理接口 /api/metas 不受影响，仍需鉴权。
+    if path.startswith("/api/public/"):
         return None
 
     # 1) API Key 通道（程序调用）
@@ -2194,20 +2400,26 @@ def api_shares_create():
     """
     新建分享。
 
-    body: { path: 相对路径, expires_days?: 0 表示永不过期 }
+    body: {
+      path: 相对路径,
+      expires_days?: 0 表示永不过期,
+      id?: 自定义短链 ID, pwd?: 访问密码, max_accessed?: 最大访问次数(0=不限),
+      remark/readme/header?: 文本, order_by?: name|size|mtime,
+      order_direction?: asc|desc, extract_folder?: none|front|back
+    }
     """
     data = request.get_json(silent=True) or {}
     rel = (data.get("path") or "").strip()
     if not rel:
         return jsonify({"ok": False, "error": "未指定要分享的路径"}), 400
-
     try:
-        days = max(0, int(data.get("expires_days") or 0))
+        int(data.get("expires_days") or 0)
+        int(data.get("max_accessed") or 0)
     except (TypeError, ValueError):
-        return jsonify({"ok": False, "error": "有效期必须是非负整数（天）"}), 400
+        return jsonify({"ok": False, "error": "有效期/最大访问次数必须是非负整数"}), 400
 
     try:
-        rec = create_share(rel, days)
+        rec = create_share(rel, data)
     except FileNotFoundError:
         return jsonify({"ok": False, "error": "目标不存在"}), 404
     except ValueError as e:
@@ -2218,7 +2430,7 @@ def api_shares_create():
 
 @app.route("/api/shares/<sid>", methods=["PATCH"])
 def api_shares_update(sid: str):
-    """启用 / 禁用分享，或改有效期。"""
+    """启用 / 禁用、改有效期，以及编辑 OpenList 式分享属性。"""
     sid = (sid or "").strip()
     data = request.get_json(silent=True) or {}
     items = load_shares()
@@ -2231,6 +2443,15 @@ def api_shares_update(sid: str):
     if "expires_days" in data:
         days = max(0, int(data.get("expires_days") or 0))
         rec["expires_at"] = int(time.time()) + days * 86400 if days else 0
+    if "pwd" in data:
+        rec["pwd"] = str(data["pwd"] or "")
+    if "max_accessed" in data:
+        rec["max_accessed"] = max(0, int(data["max_accessed"] or 0))
+    if "accessed" in data:  # 允许手动清零计数
+        rec["accessed"] = max(0, int(data["accessed"] or 0))
+    for key in ("remark", "readme", "header", "order_by", "order_direction", "extract_folder"):
+        if key in data:
+            rec[key] = str(data[key] or "")
 
     _save_shares(items)
     return jsonify({"ok": True, "item": public_share_view(rec)})
@@ -2246,6 +2467,60 @@ def api_shares_delete(sid: str):
         return jsonify({"ok": False, "error": "分享不存在"}), 404
     _save_shares(left)
     return jsonify({"ok": True, "deleted": sid})
+
+
+# ---------------------------------------------------------------------------
+# 目录元信息管理（需鉴权） —— 对照 OpenList /admin/meta/*
+# ---------------------------------------------------------------------------
+
+
+@app.route("/api/metas", methods=["GET"])
+def api_metas_list():
+    """列出全部目录元信息规则（管理页用，需鉴权）。"""
+    items = sorted(load_metas(), key=_meta_depth)
+    return jsonify({"ok": True, "items": items, "count": len(items)})
+
+
+@app.route("/api/metas", methods=["POST"])
+def api_metas_save():
+    """新建或更新一条元信息规则。body 带 path 及各字段，id=0/缺省为新建。"""
+    data = request.get_json(silent=True) or {}
+    rel = (data.get("path") or "").strip().strip("/")
+    # 允许根规则（path 为空），但其余路径必须落在盘内且存在
+    if rel:
+        try:
+            target = safe_path(rel)
+        except Exception:  # noqa: BLE001
+            return jsonify({"ok": False, "error": "非法路径"}), 400
+        if not target.exists():
+            return jsonify({"ok": False, "error": "目录不存在"}), 404
+        rel = rel_of(target)
+    try:
+        rec = save_meta({**data, "path": rel})
+    except KeyError:
+        return jsonify({"ok": False, "error": "要编辑的规则不存在"}), 404
+    return jsonify({"ok": True, "item": rec})
+
+
+@app.route("/api/metas/<int:mid>", methods=["DELETE"])
+def api_metas_delete(mid: int):
+    """删除一条元信息规则。"""
+    if not delete_meta(mid):
+        return jsonify({"ok": False, "error": "规则不存在"}), 404
+    return jsonify({"ok": True, "deleted": mid})
+
+
+@app.route("/api/metas/effect", methods=["GET"])
+def api_metas_effect():
+    """调试用：查看某路径最终生效的 meta 约束。"""
+    rel = (request.args.get("path") or "").strip()
+    return jsonify({"ok": True, "path": rel, "effect": meta_effect(rel)})
+
+
+# 注：面向 OpenList 前端的 alist 兼容端点（/api/me、/api/auth/login/hash、
+# /api/fs/*、/api/share/list、/api/admin/meta/* 等，统一 {code,message,data} 信封 +
+# 裸 Authorization token）属于「加兼容层」阶段统一实现，届时一并处理路由前缀与
+# /api/share/<token> 的命名空间冲突。此处不提前放置半成品别名。
 
 
 def _share_scope_target(rec: dict, rel: str) -> Path | None:
@@ -2286,36 +2561,93 @@ def _share_crumbs(root_path: str, target_rel: str) -> list:
     return crumbs
 
 
+def _hide_patterns(hide: str) -> list:
+    """把 meta 的 hide 字段（每行一个正则）编译成可用的正则列表；非法行忽略。"""
+    patterns = []
+    for line in (hide or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            patterns.append(re.compile(line))
+        except re.error:
+            continue
+    return patterns
+
+
+def _sorted_items(target: Path, order_by="name", order_direction="asc", hide="") -> list:
+    """
+    列目录：应用 hide 正则过滤 + 按 order_by/order_direction 排序（目录组、文件组各排）。
+
+    供公开分享浏览与游客浏览共用。目录恒在文件前（资源管理器习惯），
+    组内按名称/大小/修改时间排序，order_by=none 时保持文件系统原顺序。
+    """
+    patterns = _hide_patterns(hide)
+    dirs, files = [], []
+    for child in target.iterdir():
+        if any(p.search(child.name) for p in patterns):
+            continue
+        try:
+            meta = entry_meta(child)
+        except (OSError, PermissionError):
+            continue
+        (dirs if meta["is_dir"] else files).append(meta)
+
+    if order_by != "none":
+        def _key(m):
+            if order_by == "size":
+                return m["size"]
+            if order_by == "mtime":
+                return m["mtime"]
+            return m["name"].lower()
+        reverse = (order_direction == "desc")
+        dirs.sort(key=_key, reverse=reverse)
+        files.sort(key=_key, reverse=reverse)
+    else:
+        dirs.sort(key=lambda x: x["name"].lower())
+        files.sort(key=lambda x: x["name"].lower())
+    return dirs + files
+
+
+def _need_pwd():
+    """统一的「需要密码 / 密码错误」响应。前端据此弹密码输入框。"""
+    return jsonify({
+        "ok": False, "need_password": True,
+        "error": "需要访问密码或密码错误",
+    }), 401
+
+
 @app.route("/api/share/<token>")
 def api_share_view(token: str):
-    """公开查看分享内容（免登录）。path 为存储根相对路径。"""
+    """公开查看分享内容（免登录）。path 为存储根相对路径；受密码/次数/元信息约束。"""
     rec = find_share(token)
     if not rec:
         return jsonify({"ok": False, "error": "分享不存在或已失效"}), 404
+    if not _share_pwd_ok(rec):
+        return _need_pwd()
 
     root = safe_path(rec.get("path", ""))
     if not root.exists():
         return jsonify({"ok": False, "error": "分享内容已被移除"}), 404
 
     rel = (request.args.get("path") or "").strip()
+    # 只在打开分享根时累计一次访问（浏览子目录不重复计数）
+    if not rel:
+        _share_bump(rec)
 
+    # 目录层级的元信息（hide / readme / header）：路径以存储根为准
+    eff = meta_effect(rel_of(root))
     if rec.get("is_dir"):
-        # 目录分享：target 是分享根或其子树里的某个目录
         target = _share_scope_target(rec, rel) if rel else root
         if target is None or not target.is_dir():
             return jsonify({"ok": False, "error": "不在分享范围内或路径非法"}), 403
-        dirs, files = [], []
-        for child in target.iterdir():
-            try:
-                meta = entry_meta(child)
-            except (OSError, PermissionError):
-                continue
-            (dirs if meta["is_dir"] else files).append(meta)
-        dirs.sort(key=lambda x: x["name"].lower())
-        files.sort(key=lambda x: x["name"].lower())
-        items, file_entry = dirs + files, None
+        eff = meta_effect(rel_of(target))
+        items = _sorted_items(
+            target, rec.get("order_by", "name"),
+            rec.get("order_direction", "asc"), eff["hide"],
+        )
+        file_entry = None
     else:
-        # 文件分享：只认分享根本身，param 必须是空或相同路径
         if rel and rel != rec.get("path", ""):
             return jsonify({"ok": False, "error": "不在分享范围内"}), 403
         target = root
@@ -2332,15 +2664,23 @@ def api_share_view(token: str):
         "crumbs": _share_crumbs(rec.get("path", ""), rel_of(target)),
         "items": items,
         "file": file_entry,
+        "has_pwd": bool(rec.get("pwd")),
+        "remark": rec.get("remark", ""),
+        "readme": rec.get("readme", "") or eff["readme"],
+        "header": rec.get("header", "") or eff["header"],
+        "order_by": rec.get("order_by", "name"),
+        "order_direction": rec.get("order_direction", "asc"),
     })
 
 
 @app.route("/api/share/<token>/download")
 def api_share_download(token: str):
-    """公开下载分享内的文件（免登录）。范围校验由 share_allows 把关。"""
+    """公开下载分享内的文件（免登录）。范围校验 + 密码校验。"""
     rec = find_share(token)
     if not rec:
         return jsonify({"ok": False, "error": "分享不存在或已失效"}), 404
+    if not _share_pwd_ok(rec):
+        return _need_pwd()
 
     rel = (request.args.get("path") or "").strip()
     target = _share_scope_target(rec, rel)
@@ -2361,11 +2701,139 @@ def api_share_thumbnail(token: str):
     rec = find_share(token)
     if not rec:
         abort(404, "分享不存在或已失效")
+    if not _share_pwd_ok(rec):
+        return _need_pwd()
 
     rel = (request.args.get("path") or "").strip()
     target = _share_scope_target(rec, rel)
     if target is None:
         abort(403, "不在分享范围内")
+    return _serve_thumbnail(target)
+
+
+# ---------------------------------------------------------------------------
+# 游客公开浏览（免登录） —— 「游客可查看的目录设置」的落地
+# ---------------------------------------------------------------------------
+#
+# 语义（单主人 + 匿名游客）：
+#   - 默认游客看不到任何东西；只有被 meta 规则标记 guest_read=True 的目录
+#     （及其按 *_sub 递归的子树）对游客开放。
+#   - 开放目录可再设 password（访问密码）、hide（隐藏文件正则）、readme/header
+#     （说明文本），全部复用与分享/元信息一致的 meta_effect() 约束。
+#   - 密码随每次请求以 ?pwd= 或 X-Guest-Pwd 头传递（与 OpenList 前端把 password
+#     放在 fs/list body 里一致），前端负责保存，服务端无状态。
+#   - 这些接口在 _auth_guard 里按 /api/public/ 前缀放行，鉴权完全由本区块自管。
+
+
+def _guest_pwd() -> str:
+    return (
+        request.args.get("pwd")
+        or request.headers.get("X-Guest-Pwd")
+        or ""
+    )
+
+
+def _guest_guard(rel: str) -> tuple[dict, tuple | None]:
+    """
+    校验游客能否访问 rel。返回 (effect, error_response)。
+    error_response 非 None 表示应直接短路返回（403/401）。
+    """
+    eff = meta_effect(rel)
+    if not eff["guest_read"]:
+        return eff, (jsonify({"ok": False, "error": "该目录未对游客开放"}), 403)
+    if eff["password"] and not hmac.compare_digest(str(_guest_pwd()), eff["password"]):
+        return eff, (jsonify({
+            "ok": False, "need_password": True, "error": "需要访问密码或密码错误",
+        }), 401)
+    return eff, None
+
+
+@app.route("/api/public/roots")
+def api_public_roots():
+    """游客落地页：列出所有对游客开放的顶层目录入口。"""
+    roots = []
+    for m in load_metas():
+        if not m.get("guest_read"):
+            continue
+        rel = (m.get("path") or "").strip("/")
+        roots.append({
+            "path": rel,
+            "name": rel.split("/")[-1] if rel else "全部文件",
+            "has_pwd": bool(m.get("password")),
+            "readme": str(m.get("readme") or ""),
+            "header": str(m.get("header") or ""),
+        })
+    return jsonify({"ok": True, "roots": roots})
+
+
+@app.route("/api/public/list")
+def api_public_list():
+    """游客列目录（免登录）。受 meta 的 guest_read / password / hide 约束。"""
+    rel = (request.args.get("path") or "").strip()
+    eff, err = _guest_guard(rel)
+    if err is not None:
+        return err
+    target = safe_path(rel)
+    if not target.is_dir():
+        return jsonify({"ok": False, "error": "目录不存在"}), 404
+
+    items = _sorted_items(
+        target,
+        request.args.get("order_by") or "name",
+        request.args.get("order_direction") or "asc",
+        eff["hide"],
+    )
+    # 标注每个子项对游客是否可见，便于前端过滤不可进入的子目录
+    for it in items:
+        it["guest_read"] = meta_effect(it["path"])["guest_read"]
+
+    crumbs, acc = [], []
+    for seg in [s for s in rel_of(target).split("/") if s]:
+        acc.append(seg)
+        crumbs.append({"name": seg, "path": "/".join(acc)})
+    return jsonify({
+        "ok": True,
+        "path": rel_of(target),
+        "name": target.name,
+        "crumbs": crumbs,
+        "items": items,
+        "readme": eff["readme"],
+        "header": eff["header"],
+        "total": len(items),
+    })
+
+
+@app.route("/api/public/file")
+def api_public_file():
+    """游客下载/预览开放目录内的单个文件（免登录）。"""
+    rel = (request.args.get("path") or "").strip()
+    eff, err = _guest_guard(rel)
+    if err is not None:
+        return err
+    # hide 正则同样挡住直接按名字下载隐藏文件
+    parent_rel = "/".join(rel.split("/")[:-1])
+    parent_hide = meta_effect(parent_rel)["hide"]
+    name = rel.split("/")[-1]
+    if any(p.search(name) for p in _hide_patterns(parent_hide)):
+        abort(404, "文件不存在")
+    target = safe_path(rel)
+    if not target.is_file():
+        abort(404, "文件不存在")
+    as_dl = request.args.get("download") in ("1", "true", "yes")
+    return send_file(str(target), as_attachment=as_dl,
+                     download_name=target.name, conditional=True)
+
+
+@app.route("/api/public/thumbnail")
+def api_public_thumbnail():
+    """游客获取开放目录内文件的缩略图（免登录）。"""
+    rel = (request.args.get("path") or "").strip()
+    eff, err = _guest_guard(rel)
+    if err is not None:
+        return err
+    target = safe_path(rel)
+    if not target.is_file():
+        abort(404, "文件不存在")
     return _serve_thumbnail(target)
 
 

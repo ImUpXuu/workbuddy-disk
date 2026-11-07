@@ -1,0 +1,19 @@
+diff --git a/dist/core/utils.js b/dist/core/utils.js
+--- a/dist/core/utils.js
++++ b/dist/core/utils.js
+@@ -16,12 +16,14 @@ function replaceImport(placeholder, code) {
+ }
+ exports.replaceImport = replaceImport;
+ function replaceInStringLiteral(literal, base, placeholder) {
++    // Use raw content to preserve escaping and avoid breaking quoted strings.
++    const rawLiteral = literal.raw.slice(1, -1);
+     const quoteMark = literal.raw.charAt(0);
+     const regex = new RegExp(base, 'g');
+     // Keep track of whether we need to add quotation marks at the beginning of the
+     // final output
+     let withStartQuote = true;
+-    const transformedStr = literal.value.replace(regex, (match, index) => {
++    const transformedStr = rawLiteral.replace(regex, (match, index) => {
+         let prefix = `${quoteMark}+`;
+         if (index === 0) {
+             prefix = '';

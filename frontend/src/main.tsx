@@ -1,19 +1,27 @@
-import { StrictMode } from 'react'
-import { createRoot } from 'react-dom/client'
-import './index.css'
-import { AuthProvider } from './context/AuthContext'
-import { ToastProvider } from './context/ToastContext'
-import App from './App'
+/* @refresh reload */
+import { Router } from "@solidjs/router"
+import { render } from "solid-js/web"
 
-const el = document.getElementById('root')
-if (!el) throw new Error('找不到 #root 挂载点')
+import { Index } from "./app"
 
-createRoot(el).render(
-  <StrictMode>
-    <ToastProvider>
-      <AuthProvider>
-        <App />
-      </AuthProvider>
-    </ToastProvider>
-  </StrictMode>,
+declare global {
+  interface Window {
+    [key: string]: any
+  }
+}
+
+declare module "solid-js" {
+  namespace JSX {
+    interface CustomEvents extends HTMLElementEventMap {}
+    interface CustomCaptureEvents extends HTMLElementEventMap {}
+  }
+}
+
+render(
+  () => (
+    <Router>
+      <Index />
+    </Router>
+  ),
+  document.getElementById("root") as HTMLElement,
 )

@@ -106,29 +106,91 @@ pnpm build              # 产物在 dist/，可直接丢给 Vercel
 
 ## 分享链接
 
-把任意目录或文件变成一条**免登录**即可打开的公开链接：
+把任意目录或文件变成一条**免登录**即可打开的公开链接。数据模型参考 OpenList 的
+`Share`（密码 / 访问次数上限 / 说明 / 排序）。
 
 ```bash
 # 分享某个目录（返回 token 与公开链接 /#/s/<token>）
 curl -X POST "$BASE/api/shares" -H "X-API-Key: $KEY" \
-  -H "Content-Type: application/json" -d '{"path":"photos/2024","expires_days":0}'
+  -H "Content-Type: application/json" \
+  -d '{"path":"photos/2024","expires_days":0,"pwd":"s123","max_accessed":100,
+       "remark":"给客户","readme":"目录说明","header":"置顶公告","order_by":"size","order_direction":"desc"}'
 
-# 任何人拿链接都能直接看（无需任何凭证）
-curl "$BASE/api/share/<token>"
-curl "$BASE/api/share/<token>/download?path=photos/2024/a.jpg"
+# 任何人拿链接都能直接看（有密码时带 ?pwd=）
+curl "$BASE/api/share/<token>?pwd=s123"
+curl "$BASE/api/share/<token>/download?path=photos/2024/a.jpg&pwd=s123"
 ```
+
+新建 / 编辑（`POST /api/shares`、`PATCH /api/shares/<id>`）可用字段：
+
+| 字段 | 说明 |
+|---|---|
+| `path` | 要分享的文件或目录（相对存储根） |
+| `expires_days` | 有效天数，`0` 永不过期 |
+| `id` | 自定义短链 ID（可选，不填自动生成） |
+| `pwd` | 访问密码；非空时查看 / 下载 / 缩略图都要带 `?pwd=` |
+| `max_accessed` | 最大访问次数，`0` 不限；打开分享根累计一次，达到即失效 |
+| `remark` / `readme` / `header` | 备注 / 目录说明 / 置顶公告（前端展示用） |
+| `order_by` | 列表排序：`name` / `size` / `mtime` / `none` |
+| `order_direction` | `asc` / `desc` |
 
 - 目录分享覆盖整个子树；文件分享只暴露那一个文件。
 - 链接即凭证：`token` 是 URL 里唯一的保密要素，泄露等同于内容泄露，
   因此服务端**明文存储**（与 API Key 的哈希存储不同）。
-- 有效期 `expires_days`：`0` 表示永不过期；过期 / 被停用 / 被撤销都立即 404。
-- 范围校验：下载与缩略图都过 `share_allows()`，越权访问分享外的路径直接拒绝。
-- 前端用 **hash 路由**（如 `#/d/photos/2024`、`#/s/<token>`），
-  服务端永远只服务 `/`，目录链接与分享链接在任意托管方式下都能直接打开，
-  浏览器前进 / 后退也能正确回退目录层级。
+- 过期 / 停用 / 撤销 / 访问次数用尽都立即 404；密码错误返回 `401 + need_password`。
+- 范围校验：下载与缩略图都过 `share_allows()` + 密码校验，越权直接拒绝。
+- 前端用 **hash 路由**（如 `#/d/photos/2024`、`#/s/<token>`），服务端永远只服务 `/`。
 
 > ⚠️ 分享链接是公开入口，发给别人即代表授权其访问对应内容；
 > 不再需要时请到「分享管理」页撤销。
+
+## 权限管理 / 游客可见目录 / 元信息
+
+采用**单主人 + 匿名游客**模型（不做多用户账号）。核心是「目录元信息（meta）」——
+参考 OpenList 的 `Meta`：按路径给目录配置访问规则，规则可递归作用于子树。
+
+> 数据存储：`.config/metas.json`（权限 600）。规则按路径深度「最具体优先」，
+> 逐字段「首次命中锁定」，因此能给子目录单独设 `guest_read=false` 关闭开放。
+
+### 元信息规则字段
+
+| 字段 | 说明 |
+|---|---|
+| `path` | 规则作用的目录（相对存储根，空串 = 全盘根规则） |
+| `guest_read` | **是否对游客开放**（默认全盘关闭） |
+| `guest_read_sub` | 开放是否递归到子目录（默认 `true`） |
+| `password` | 该目录的访问密码（游客需带 `?pwd=`） |
+| `write` / `write_sub` | 预留的游客写权限开关 |
+| `hide` | 隐藏文件正则（每行一个），对列目录和直接下载都生效 |
+| `readme` / `header` | 目录说明 / 置顶公告 |
+| `p_sub`/`h_sub`/`r_sub`/`header_sub` | 密码 / 隐藏 / 说明 / 公告是否递归 |
+
+### 管理接口（需鉴权）
+
+```bash
+curl -H "X-API-Key: $KEY" "$BASE/api/metas"                    # 列出全部规则
+curl -X POST -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+  -d '{"path":"public","guest_read":true,"password":"abc","hide":"^_"}' \
+  "$BASE/api/metas"                                              # 新建/更新(id=0 新建, 带 id 编辑)
+curl -X DELETE -H "X-API-Key: $KEY" "$BASE/api/metas/1"        # 删除
+curl -H "X-API-Key: $KEY" "$BASE/api/metas/effect?path=public/x"  # 调试: 查看某路径生效的约束
+```
+
+### 游客公开浏览（免登录）
+
+默认游客看不到任何东西；只有被 `guest_read` 标记的目录及其子树可访问。
+密码随每次请求以 `?pwd=` 或 `X-Guest-Pwd` 头传递，服务端无状态。
+
+```bash
+curl "$BASE/api/public/roots"                       # 游客落地页: 列出开放的顶层入口
+curl "$BASE/api/public/list?path=public&pwd=abc"   # 列目录(应用 hide/readme/header)
+curl "$BASE/api/public/file?path=public/a.txt&download=1&pwd=abc"  # 下载
+curl "$BASE/api/public/thumbnail?path=public/a.jpg&pwd=abc"        # 缩略图
+```
+
+- 未开放目录 → `403`；需要密码 → `401 + need_password`。
+- `hide` 正则同时过滤列目录与「按名字直接下载」，避免绕过。
+- 已登录主人走原有 `/api/list` 等接口，不受这些规则限制。
 
 ## WebDAV
 

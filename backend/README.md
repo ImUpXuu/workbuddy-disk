@@ -113,11 +113,19 @@ POST /api/upload/complete  → 合并
 | GET/POST | `/api/apikeys` | 列出 / 新建 Key | |
 | PATCH/DELETE | `/api/apikeys/<id>` | 启停改名 / 删除 | |
 | GET | `/api/shares` | 列出全部分享（管理，需鉴权） | |
-| POST | `/api/shares` | 新建分享（body: `path` / `expires_days`） | |
-| PATCH/DELETE | `/api/shares/<id>` | 启停 / 改有效期 / 撤销 | |
-| GET | `/api/share/<token>` | 公开查看分享内容（免登录） | |
+| POST | `/api/shares` | 新建分享（见「分享链接」字段表） | |
+| PATCH/DELETE | `/api/shares/<id>` | 编辑属性 / 撤销 | |
+| GET | `/api/share/<token>` | 公开查看分享内容（免登录，可带 `?pwd=`） | |
 | GET | `/api/share/<token>/download` | 公开下载分享内文件（免登录） | |
 | GET | `/api/share/<token>/thumbnail` | 公开缩略图（免登录） | |
+| GET | `/api/metas` | 列出目录元信息规则（管理，需鉴权） | |
+| POST | `/api/metas` | 新建/更新元信息规则 | |
+| DELETE | `/api/metas/<id>` | 删除元信息规则 | |
+| GET | `/api/metas/effect?path=` | 调试：查看某路径生效的约束 | |
+| GET | `/api/public/roots` | 游客：列出开放的顶层入口（免登录） | |
+| GET | `/api/public/list?path=` | 游客：列目录（免登录） | |
+| GET | `/api/public/file?path=` | 游客：下载/预览文件（免登录） | |
+| GET | `/api/public/thumbnail?path=` | 游客：缩略图（免登录） | |
 | POST | `/api/upload` | 小文件直传 | |
 | POST | `/api/upload/init` | 分片：建会话 | |
 | POST | `/api/upload/chunk` | 分片：传一片 | |
@@ -163,28 +171,71 @@ curl "$BASE/api/thumbnail?path=photo/a.jpg" -H "X-API-Key: $KEY" -o t.webp
 
 ## 分享链接
 
-把任意目录或文件变成一条**免登录**即可打开的公开链接：
+把任意目录或文件变成一条**免登录**即可打开的公开链接。数据模型参考 OpenList 的
+`Share`：支持密码、访问次数上限、说明文本、排序。
 
 ```bash
-# 分享某个目录（返回 token 与公开链接 /#/s/<token>）
 curl -X POST "$BASE/api/shares" -H "X-API-Key: $KEY" \
-  -H "Content-Type: application/json" -d '{"path":"photos/2024","expires_days":0}'
+  -H "Content-Type: application/json" \
+  -d '{"path":"photos/2024","expires_days":0,"pwd":"s123","max_accessed":100,
+       "remark":"给客户","readme":"目录说明","order_by":"size","order_direction":"desc"}'
 
-# 任何人拿链接都能直接看（无需任何凭证）
-curl "$BASE/api/share/<token>"
-curl "$BASE/api/share/<token>/download?path=photos/2024/a.jpg"
+curl "$BASE/api/share/<token>?pwd=s123"
+curl "$BASE/api/share/<token>/download?path=photos/2024/a.jpg&pwd=s123"
 ```
 
-- 目录分享覆盖整个子树；文件分享只暴露那一个文件。
-- 链接即凭证：`token` 是 URL 里唯一的保密要素，泄露等同于内容泄露，
-  因此服务端**明文存储**（与 API Key 的哈希存储不同）。
-- 有效期 `expires_days`：`0` 表示永不过期；过期 / 被停用 / 被撤销都立即 404。
-- 范围校验：下载与缩略图都过 `share_allows()`，越权访问分享外的路径直接拒绝。
-- 前端用 **hash 路由**（如 `#/d/photos/2024`、`#/s/<token>`），
-  服务端永远只服务 `/`，分享链接 / 目录链接在任意托管方式下都能直接打开。
+新建 / 编辑（`POST /api/shares`、`PATCH /api/shares/<id>`）字段：
 
-> ⚠️ 分享链接是公开入口，发给别人即代表授权其访问对应内容；
-> 不再需要时请到「分享管理」页撤销。
+| 字段 | 说明 |
+|---|---|
+| `path` | 要分享的文件或目录（相对存储根） |
+| `expires_days` | 有效天数，`0` 永不过期 |
+| `id` | 自定义短链 ID（可选） |
+| `pwd` | 访问密码；非空时查看 / 下载 / 缩略图都要带 `?pwd=` |
+| `max_accessed` | 最大访问次数，`0` 不限；打开分享根累计一次，达到即失效 |
+| `remark` / `readme` / `header` | 备注 / 目录说明 / 置顶公告 |
+| `order_by` | `name` / `size` / `mtime` / `none` |
+| `order_direction` | `asc` / `desc` |
+
+- 目录分享覆盖整个子树；文件分享只暴露那一个文件。
+- 过期 / 停用 / 撤销 / 次数用尽 → 404；密码错误 → `401 + need_password`。
+- 范围校验：下载与缩略图都过 `share_allows()` + 密码校验，越权直接拒绝。
+- 旧格式分享（无新字段）完全向后兼容。
+
+## 权限管理 / 游客可见目录 / 元信息
+
+**单主人 + 匿名游客**模型（不做多用户账号）。核心是「目录元信息（meta）」——
+参考 OpenList 的 `Meta`：按路径配置访问规则，规则可递归作用于子树。
+
+> 存储：`.config/metas.json`（权限 600）。规则按路径深度「最具体优先」，
+> 逐字段「首次命中锁定」——可给子目录单独设 `guest_read=false` 关闭开放。
+
+规则字段：`path`（作用目录，空串=全盘）、`guest_read`（是否对游客开放）、
+`guest_read_sub`（递归，默认 true）、`password`（访问密码）、`hide`（隐藏文件正则，
+每行一个）、`readme`/`header`（说明/公告）、`p_sub`/`h_sub`/`r_sub`/`header_sub`
+（各字段是否递归）、`write`/`write_sub`（预留游客写权限）。
+
+```bash
+# 管理（需鉴权）
+curl -H "X-API-Key: $KEY" "$BASE/api/metas"
+curl -X POST -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+  -d '{"path":"public","guest_read":true,"password":"abc","hide":"^_"}' "$BASE/api/metas"
+curl -X DELETE -H "X-API-Key: $KEY" "$BASE/api/metas/1"
+curl -H "X-API-Key: $KEY" "$BASE/api/metas/effect?path=public/x"
+
+# 游客公开浏览（免登录，默认全盘关闭，只有 guest_read 标记的目录可访问）
+curl "$BASE/api/public/roots"
+curl "$BASE/api/public/list?path=public&pwd=abc"
+curl "$BASE/api/public/file?path=public/a.txt&download=1&pwd=abc"
+curl "$BASE/api/public/thumbnail?path=public/a.jpg&pwd=abc"
+```
+
+- 密码随每次请求以 `?pwd=` 或 `X-Guest-Pwd` 头传递，服务端无状态。
+- 未开放 → `403`；需要密码 → `401 + need_password`；`hide` 同时挡住直接按名下载。
+- 已登录主人走原有 `/api/list` 等接口，不受这些规则限制。
+- 面向 OpenList 前端的 alist 兼容层（`/api/me`、`/api/auth/login/hash`、
+  `/api/fs/*`、`/api/share/list`、`/api/admin/meta/*`，统一 `{code,message,data}`
+  信封 + 裸 `Authorization` token）会与前端替换一并实现；此处先用自有 API。
 
 ## WebDAV
 

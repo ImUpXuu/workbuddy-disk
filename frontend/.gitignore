@@ -1,14 +1,8 @@
-node_modules/
-dist/
-dist-ssr/
-.vite/
-coverage/
-*.local
-.env
-.env.*
-!.env.example
-.vercel
-.netlify
-
-# TypeScript 增量构建缓存
-*.tsbuildinfo
+node_modules
+dist
+/src/lang/*
+!/src/lang/en/
+.DS_Store
+.idea
+.test
+.codebuddy
