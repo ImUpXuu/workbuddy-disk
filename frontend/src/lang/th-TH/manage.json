@@ -39,9 +39,10 @@
     "media_transcode": "การตั้งค่าการแปลงรหัส",
     "transcode": "แปลงรหัส",
     "plugins": "ปลั๊กอิน",
-    "seed": "เมล็ดพันธุ์"
+    "seed": "เมล็ดพันธุ์",
+    "server_status": "Server Status"
   },
-  "title": "การจัดการ OpenList",
+  "title": "My Disk · Manage",
   "media_lib": {
     "base_title": "พื้นฐานคลังสื่อ",
     "base_desc": "สวิตช์หลัก จุดเชื่อมต่อ Emby / OpenSubsonic และคีย์แอป",

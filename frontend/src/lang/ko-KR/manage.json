@@ -39,9 +39,10 @@
     "media_transcode": "트랜스코딩 설정",
     "transcode": "트랜스코딩",
     "plugins": "플러그인",
-    "seed": "시드"
+    "seed": "시드",
+    "server_status": "Server Status"
   },
-  "title": "OpenList 관리",
+  "title": "My Disk · Manage",
   "media_lib": {
     "base_title": "미디어 기본 설정",
     "base_desc": "마스터 스위치, Emby / OpenSubsonic 엔드포인트 및 앱 키",

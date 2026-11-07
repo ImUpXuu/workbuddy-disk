@@ -45,6 +45,12 @@ export const side_menu_items: SideMenuItem[] = [
     component: lazy(() => import("./users/Profile")),
   },
   {
+    title: "manage.sidemenu.server_status",
+    icon: BsHddNetwork,
+    to: "/@manage/server-status",
+    component: lazy(() => import("./ServerStatus")),
+  },
+  {
     title: "manage.sidemenu.settings",
     icon: BsGearFill,
     to: "/@manage/settings",

@@ -77,7 +77,12 @@ const Placeholder = (props: { title: string; to: string }) => {
  */
 const withAdminGuard = (to: string, component: Component) => {
   // 站点设置与媒体库后台都只对管理员开放；其余页面（个人资料 / 2FA 等）保持原样
-  if (!to.startsWith("/media") && !to.startsWith("/settings")) return component
+  if (
+    !to.startsWith("/media") &&
+    !to.startsWith("/settings") &&
+    !to.startsWith("/server-status")
+  )
+    return component
   return () => (
     <MustAdmin>
       <Dynamic component={component} />

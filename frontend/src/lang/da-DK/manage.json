@@ -39,9 +39,10 @@
     "media_transcode": "Indstillinger for omkodning",
     "transcode": "Omkod",
     "plugins": "Plugins",
-    "seed": "Frø"
+    "seed": "Frø",
+    "server_status": "Server Status"
   },
-  "title": "OpenList Management",
+  "title": "My Disk · Manage",
   "media_lib": {
     "base_title": "Grundlæggende medieindstillinger",
     "base_desc": "Hovedkontakt, Emby-/OpenSubsonic-endpoints og appnøgler",

@@ -1,0 +1,53 @@
+服务器状态接口（后台「服务器状态」面板数据源）
+================================================
+
+需求
+----
+后台新增「服务器状态」菜单 + 状态面板，展示：
+  - 进程运行时：版本 / Go 版本 / 运行时长 / 协程 / Go 堆内存
+  - 系统资源：CPU 使用率 / 内存 / 磁盘（数据目录）
+  - 网关与部署：实际网关 Host / 站点 URL / 端口 / 已挂载存储数
+  - 上传链路：分片开关 / 每片大小 / 前端并发 / 后端接收窗口
+  - 「经网关测速」按钮：前端上传 8MB 临时文件测真实吞吐
+
+改动
+----
+1) 新增文件 server/handles/server_status.go
+   （完整源码见 backend-openlist/files/server_status.go）
+
+   关键点：
+   - 复用项目已有依赖 github.com/shirou/gopsutil/v4（cpu/mem/disk/host），
+     不引入新依赖，不增加编译负担。
+   - CPU 使用率用后台 goroutine 每 3s 采样（cpu.Percent 需要两次快照间隔），
+     接口直接读缓存，避免每次刷新阻塞请求 ~1s。
+   - conf.Conf / conf.Version / conf.BuiltAt / conf.DataDir 读取部署信息；
+     setting.GetBool/GetInt/GetStr 读取运行期设置；
+     op.GetAllStorages() 统计已挂载存储数；
+     c.Request.Host 返回「实际经网关访问」的域名（本地直连时是 127.0.0.1:8000）。
+   - common.SuccessResp(c, gin.H{...}) 返回标准 {code,message,data} 信封。
+
+2) server/router.go —— 在 admin 路由组注册（幂等）
+--- a/server/router.go
++++ b/server/router.go
+@@ func admin(g *gin.RouterGroup) {
+ func admin(g *gin.RouterGroup) {
++	g.GET("/server/status", handles.ServerStatus)
+ 	meta := g.Group("/meta")
+
+权限
+----
+挂在 `auth.Group("/admin", middlewares.AuthAdmin)` 下：需 admin 角色，
+且沿用 ?token= query 优先鉴权补丁（经网关可正常访问）。
+前端页面用 `r.get("/admin/server/status")`，request.ts 拦截器自动注入 ?token=。
+
+前端配套
+--------
+  frontend/src/pages/manage/ServerStatus.tsx       状态面板页面
+  frontend/src/pages/manage/sidemenu_items.tsx     新增菜单项（role 未设置 => 仅 admin 可见）
+  frontend/src/pages/manage/routes.tsx             /server-status 加 MustAdmin 守卫
+  frontend/src/lang/*/manage.json                  sidemenu.server_status + status 段文案
+
+一键复现
+--------
+backend-openlist/build.sh 的 2.7 段会：复制 files/server_status.go → 源码、
+幂等注入路由、gofmt。执行 `bash backend-openlist/build.sh` 即可。

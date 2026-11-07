@@ -39,9 +39,10 @@
     "media_transcode": "Transkodierungseinstellungen",
     "transcode": "Transkodieren",
     "plugins": "Plugins",
-    "seed": "Saatgut"
+    "seed": "Saatgut",
+    "server_status": "Server Status"
   },
-  "title": "OpenListen-Management",
+  "title": "My Disk · Manage",
   "media_lib": {
     "base_title": "Medien-Grundeinstellungen",
     "base_desc": "Hauptschalter, Emby-/OpenSubsonic-Endpunkte und App-Schlüssel",

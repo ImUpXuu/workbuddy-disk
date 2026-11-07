@@ -39,7 +39,8 @@
     "media_transcode": "إعدادات تحويل الترميز",
     "transcode": "تحويل الترميز",
     "plugins": "الإضافات",
-    "seed": "بذرة"
+    "seed": "بذرة",
+    "server_status": "Server Status"
   },
   "title": "إدارة القائمة المفتوحة",
   "media_lib": {

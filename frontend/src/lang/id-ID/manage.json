@@ -39,9 +39,10 @@
     "media_transcode": "Pengaturan Transkode",
     "transcode": "Transkode",
     "plugins": "Plugin",
-    "seed": "Seed"
+    "seed": "Seed",
+    "server_status": "Server Status"
   },
-  "title": "Manajemen OpenList",
+  "title": "My Disk · Manage",
   "media_lib": {
     "base_title": "Dasar-Dasar Media",
     "base_desc": "Sakelar utama, endpoint Emby / OpenSubsonic, dan kunci aplikasi",

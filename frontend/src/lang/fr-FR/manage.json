@@ -39,9 +39,10 @@
     "media_transcode": "Paramètres de transcodage",
     "transcode": "Transcoder",
     "plugins": "Plugins",
-    "seed": "Graine"
+    "seed": "Graine",
+    "server_status": "Server Status"
   },
-  "title": "Gestion OpenList",
+  "title": "My Disk · Manage",
   "media_lib": {
     "base_title": "Paramètres multimédias de base",
     "base_desc": "Activation générale, points de terminaison Emby / OpenSubsonic et clés d’application",

@@ -39,9 +39,10 @@
     "media_transcode": "ٹرانس کوڈنگ کی ترتیبات",
     "transcode": "ٹرانس کوڈ کریں",
     "plugins": "پلگ انز",
-    "seed": "سیڈ"
+    "seed": "سیڈ",
+    "server_status": "Server Status"
   },
-  "title": "OpenList مینجمنٹ",
+  "title": "My Disk · Manage",
   "media_lib": {
     "base_title": "میڈیا کی بنیادی ترتیبات",
     "base_desc": "ماسٹر سوئچ، Emby / OpenSubsonic اینڈ پوائنٹس اور ایپ کیز",

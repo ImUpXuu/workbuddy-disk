@@ -39,9 +39,10 @@
     "media_transcode": "ट्रांसकोडिंग सेटिंग्स",
     "transcode": "ट्रांसकोड",
     "plugins": "प्लगइन्स",
-    "seed": "बीज"
+    "seed": "बीज",
+    "server_status": "Server Status"
   },
-  "title": "OpenList प्रबंधन",
+  "title": "My Disk · Manage",
   "media_lib": {
     "base_title": "मीडिया की मूल सेटिंग्स",
     "base_desc": "मास्टर स्विच, Emby / OpenSubsonic एंडपॉइंट और ऐप कुंजियाँ",

@@ -39,9 +39,10 @@
     "media_transcode": "Transkodningsinställningar",
     "transcode": "Transkoda",
     "plugins": "Tillägg",
-    "seed": "Frö"
+    "seed": "Frö",
+    "server_status": "Server Status"
   },
-  "title": "Hantering av OpenList",
+  "title": "My Disk · Manage",
   "media_lib": {
     "base_title": "Grundläggande medieinställningar",
     "base_desc": "Huvudbrytare, Emby-/OpenSubsonic-slutpunkter och appnycklar",

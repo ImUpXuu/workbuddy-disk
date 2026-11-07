@@ -30,9 +30,12 @@ interface MultipartSnapshot {
 type SnapResp = Resp<MultipartSnapshot>
 type InitResp = Resp<MultipartSnapshot & { resumed: boolean }>
 
-// concurrent chunk requests; the server-side window holds 8 chunks, so 3
-// in-flight ascending uploads virtually never hit flow control
-const INFLIGHT = 3
+// 并发分片数。CloudStudio 网关按「连接/流」限速，实测经网关：
+//   单连接 1.67 MB/s；4 并发 4.89 MB/s；8 并发 9.27 MB/s
+//   真实 multipart 400MB：并发3 = 3.78 MB/s，并发8 = 10.23 MB/s（2.70x）
+// 网关为 HTTP/2，浏览器无同域 6 连接上限，并发同样有效。
+// 后端接收窗口 WindowSlots=8，并发 8 正好打满窗口且不触发 429 流控。
+const INFLIGHT = 8
 // flow control (429 / server window full) is not failure: the server already
 // parks each chunk request for up to ~10s waiting for a slot, so retries here
 // only happen when the storage uplink is genuinely slower than the client —

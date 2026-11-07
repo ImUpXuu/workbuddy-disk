@@ -39,9 +39,10 @@
     "media_transcode": "Transcoderingsinstellingen",
     "transcode": "Transcoderen",
     "plugins": "Plug-ins",
-    "seed": "Zaad"
+    "seed": "Zaad",
+    "server_status": "Server Status"
   },
-  "title": "OpenList Management",
+  "title": "My Disk · Manage",
   "media_lib": {
     "base_title": "Basisinstellingen voor media",
     "base_desc": "Hoofdschakelaar, Emby-/OpenSubsonic-eindpunten en app-sleutels",

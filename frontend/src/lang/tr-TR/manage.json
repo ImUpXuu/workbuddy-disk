@@ -39,9 +39,10 @@
     "media_transcode": "Kod Dönüştürme Ayarları",
     "transcode": "Kod Dönüştür",
     "plugins": "Eklentiler",
-    "seed": "Tohum"
+    "seed": "Tohum",
+    "server_status": "Server Status"
   },
-  "title": "OpenList Yönetimi",
+  "title": "My Disk · Manage",
   "media_lib": {
     "base_title": "Medya Temel Ayarları",
     "base_desc": "Ana anahtar, Emby / OpenSubsonic uç noktaları ve uygulama anahtarları",

@@ -39,9 +39,10 @@
     "media_transcode": "Configuración de transcodificación",
     "transcode": "Transcodificar",
     "plugins": "Plugins",
-    "seed": "Semilla"
+    "seed": "Semilla",
+    "server_status": "Server Status"
   },
-  "title": "Gestión de OpenList",
+  "title": "My Disk · Manage",
   "media_lib": {
     "base_title": "Datos básicos de la biblioteca multimedia",
     "base_desc": "Interruptor principal, endpoints de Emby / OpenSubsonic y claves de aplicación",

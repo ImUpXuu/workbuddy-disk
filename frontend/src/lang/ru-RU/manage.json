@@ -39,9 +39,10 @@
     "media_transcode": "Настройки транскодирования",
     "transcode": "Транскодировать",
     "plugins": "Плагины",
-    "seed": "Сид"
+    "seed": "Сид",
+    "server_status": "Server Status"
   },
-  "title": "Управление OpenList",
+  "title": "My Disk · Manage",
   "media_lib": {
     "base_title": "Основные настройки медиатеки",
     "base_desc": "Главный переключатель, конечные точки Emby / OpenSubsonic и ключи приложения",

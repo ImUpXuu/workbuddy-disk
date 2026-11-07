@@ -39,9 +39,10 @@
     "media_transcode": "ট্রান্সকোডিং সেটিংস",
     "transcode": "ট্রান্সকোড",
     "plugins": "প্লাগইনসমূহ",
-    "seed": "বীজ"
+    "seed": "বীজ",
+    "server_status": "Server Status"
   },
-  "title": "OpenList ব্যবস্থাপনা",
+  "title": "My Disk · Manage",
   "media_lib": {
     "base_title": "মিডিয়ার প্রাথমিক সেটিংস",
     "base_desc": "মাস্টার সুইচ, Emby / OpenSubsonic এন্ডপয়েন্ট এবং অ্যাপ কী",

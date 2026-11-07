@@ -39,9 +39,10 @@
     "media_transcode": "トランスコード設定",
     "transcode": "トランスコード",
     "plugins": "プラグイン",
-    "seed": "種子"
+    "seed": "種子",
+    "server_status": "Server Status"
   },
-  "title": "OpenList 管理",
+  "title": "My Disk · Manage",
   "media_lib": {
     "base_title": "メディアの基本設定",
     "base_desc": "マスタースイッチ、Emby / OpenSubsonic エンドポイント、アプリキー",

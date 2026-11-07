@@ -39,9 +39,10 @@
     "media_transcode": "Cài đặt chuyển mã",
     "transcode": "Chuyển mã",
     "plugins": "Plugin",
-    "seed": "Hạt giống"
+    "seed": "Hạt giống",
+    "server_status": "Server Status"
   },
-  "title": "Quản lý OpenList",
+  "title": "My Disk · Manage",
   "media_lib": {
     "base_title": "Cài đặt cơ bản thư viện phương tiện",
     "base_desc": "Công tắc chính, điểm cuối Emby / OpenSubsonic và khóa ứng dụng",
