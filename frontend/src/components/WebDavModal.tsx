@@ -70,6 +70,15 @@ export default function WebDavModal({ open, onClose }: { open: boolean; onClose(
         WebDAV 将无法挂载——需让客户端直连后端域名。
       </div>
 
+      <div className="mt-2 rounded border border-[--color-line] bg-[--color-surface-alt] px-3 py-2 text-[11.5px] leading-relaxed text-[--color-ink-soft]">
+        <Icon d={ICONS.info} className="mr-1 inline size-3.5 align-[-2px] text-[--color-accent]" strokeWidth={2} />
+        <span className="font-medium text-[--color-ink]">经过会剥离请求头的网关时</span>（如 CloudStudio 预览地址）：
+        把密钥放进地址的查询参数，即
+        <code className="mx-1 font-mono">…/dav/?apikey=你的KEY</code>
+        。此方式适用于 rclone / Cyberduck / curl / 手机端，但
+        <span className="font-medium">Windows 资源管理器不行</span>（它只发 Basic 头、不会带参数），需直连后端域名。
+      </div>
+
       <div className="mt-3">
         <p className="win-nav-group-title mb-1.5">常见客户端</p>
         <ul className="space-y-1.5">

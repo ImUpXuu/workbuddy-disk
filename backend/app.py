@@ -2415,6 +2415,10 @@ def _dav_auth_info() -> dict | None:
 
     返回 {"kind": "login"}（主人，登录密钥） / {"kind": "apikey", "key": rec} / None（未通过）。
     密码即凭证：要么是登录密钥 ACCESS_KEY，要么是某个 API Key 明文。
+
+    兼容通道：当 Authorization 头被网关（如 CloudStudio 预览网关）剥离时，
+    允许用查询参数携带密钥（?apikey= / ?key= / ?token=），与全局 API 的
+    ?apikey= 通道保持一致；注意网关会追加 :N 后缀，需剥离。
     """
     pw = ""
     auth = request.authorization
@@ -2428,6 +2432,11 @@ def _dav_auth_info() -> dict | None:
                 pw = raw.split(":", 1)[1] if ":" in raw else raw
             except Exception:  # noqa: BLE001
                 pw = ""
+    if not pw:
+        q = (request.args.get("apikey") or request.args.get("key")
+             or request.args.get("token") or "").strip()
+        if q:
+            pw = _strip_gateway_suffix(q)
     if not pw:
         return None
     if hmac.compare_digest(pw, str(ACCESS_KEY)):
