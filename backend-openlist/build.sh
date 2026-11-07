@@ -127,6 +127,22 @@ PY
 fi
 [ -f "$STATUS_DST" ] && gofmt -w "$STATUS_DST" "$ROUTER" 2>/dev/null || true
 
+# 2.8) WebDAV 鉴权（新增，幂等）
+#  官方 WebDAVAuth 只认 Authorization 里的 Basic / Bearer，而该头会被网关覆盖，
+#  导致经网关 PROPFIND/MKCOL/PUT 全 401（Windows 报「文件夹似乎无效」）。
+#  定制版优先从 ?token=/?key=/?apikey= 或 X-Openlist-Token 取凭证，
+#  仍走官方 CanWebdavRead / CanWebdavManage 权限检查。
+DAV_SRC="$REPO/backend-openlist/files/webdav.go"
+DAV_DST="$SRC/server/webdav.go"
+if [ -f "$DAV_SRC" ]; then
+  [ -f "$DAV_DST.orig" ] || cp "$DAV_DST" "$DAV_DST.orig"
+  cp "$DAV_SRC" "$DAV_DST"
+  gofmt -w "$DAV_DST"
+  echo "==> 已安装定制 WebDAV 鉴权（query / 自定义头 token）"
+else
+  echo "!! 缺少 $DAV_SRC，WebDAV 将退回官方实现（经网关不可用）" >&2
+fi
+
 # 3) dist 占位：dist_dir 非空时 initIndex() 仍会 static.Open("index.html")，
 #    缺 index.html 会 Fatal 退出，必须放一个最小 index.html（前后端分离，前端由 Vercel 提供）。
 #    同时官方源码 public/dist 自带 README.md 供 //go:embed all:dist 用（缺则补）。

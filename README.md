@@ -97,6 +97,49 @@ OpenList 的业务错误是 **HTTP 200 + body `{code,message,data}`**，由 `han
 
 ---
 
+## WebDAV（2026-11-07 实测）
+
+WebDAV 由 OpenList Go 后端原生提供，路径 `/dav`。官方 `WebDAVAuth` 只认 `Authorization`
+里的 `Basic user:pass` / `Bearer <静态Token>`，而这个头会被网关覆盖成失效 token——
+因此**官方实现经网关时所有 PROPFIND 都返回 401**，Windows 资源管理器会报
+「输入的文件夹似乎无效」。本地直连 `http://127.0.0.1:8000/dav/` 则一切正常。
+
+定制 [`backend-openlist/files/webdav.go`](./backend-openlist/files/webdav.go)（编译时整体覆盖官方
+同名文件，差异留档 `patches/webdav-query-auth.patch`）给 `WebDAVAuth` 增加了不会被网关篡改的
+凭证通道：
+
+| 方式 | 示例 | 适用 |
+| --- | --- | --- |
+| `?token=` / `?key=` / `?apikey=` | `.../dav/?token=<静态Token>` | 通用，可写进 URL |
+| `X-Openlist-Token` 请求头 | `<静态Token>` | rclone / davfs2 / RaiDrive 等可配 header 的客户端 |
+| `Basic admin:密码` | 本地直连 | 不经网关时可用，经网关会被覆盖 |
+
+凭证二选一：**后台静态 Token**（不过期，推荐长期挂载）或**网页登录 JWT**（48h，后端重启失效）。
+解析成功后仍走官方 `CanWebdavRead` / `CanWebdavManage` 权限检查，不绕过鉴权；无效凭证返回 401。
+
+> **地址必须是后端网关域名**，不是 `pan.upxuu.com`——Vercel 会把 `/dav/` rewrite 成前端首页，
+> WebDAV 客户端会认为文件夹无效。
+> `https://<后端域名>.app.workbuddy.host/dav/?token=<静态Token>`
+> Windows 映射：`net use Z: "https://<后端域名>.app.workbuddy.host/dav/?token=<静态Token>"`；
+> 若仍弹凭据框，说明客户端把 query 丢了，改用可配 `X-Openlist-Token` 头的客户端。
+
+**实测（经网关，`?token=<静态Token>`）**：OPTIONS `200`（`DAV: 1, 2`）、PROPFIND `207`、
+GET `200`、MKCOL `201`、PUT `201`、COPY `201`、MOVE `201`、PROPPATCH `207`、LOCK `200`、
+DELETE `204`；`?key=` / `?apikey=` / `X-Openlist-Token` / `?token=<JWT>` 同样可用；
+无凭证与无效凭证均 `401`。本地直连 Basic 全方法正常。
+
+### 平台 WAF 限制（非代码问题）
+
+腾讯云 WAF（`server: stgw`）会拦截 **PUT / COPY / MOVE 到带特定扩展名的路径**，返回
+403 HTML 拦截页（不是后端响应）。实测黑名单：`txt php jsp asp aspx sh html htm sql env bak`；
+其余 28 种常见扩展名（apk / jpg / png / rar / zip / 7z / mp4 / doc / docx / xls / xlsx /
+pdf / exe / js / json / log / ini / conf / xml / csv / md / bin / dat / gz / iso / py / go）
+均 `201` 正常写入，GET 读取这些文件不受影响。
+这是平台层规则，应用层无法绕过；`.txt` 等文件请改用网页端上传（走 `/api/fs/put`，
+路径不带扩展名，WAF 放行），或直连后端。
+
+---
+
 ## 管理员与登录
 
 - 初始化（v4.2.9）：**不要**先跑 `admin set`——首次无 admin 用户时它会报 `record not found`。
