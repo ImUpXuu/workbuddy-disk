@@ -1,0 +1,66 @@
+分片上传：默认开启 + 每片 50MB（源码默认值固化）
+================================================
+
+背景
+----
+OpenList v4.2.9 官方默认值：
+  multipart_enabled   = true  （已默认开启）
+  multipart_chunk_size = 10   （默认每片 10 MB）
+
+需求：分片上传自动开启、每片 50MB，且重建后端 / 清空数据后无需管理员
+手动到管理页设置即自动生效。设置项存于数据库 x_setting_items，仅改数据库
+会在清库后丢失，因此同时把默认值固化进源码（由 build.sh 的 2.6 段幂等应用）。
+
+前端行为（无需改动）
+--------------------
+  src/pages/home/uploads/uploads.ts   -> Multipart 排在上传器列表第一位，
+                                         available() 依据 multipart_enabled
+  src/pages/home/uploads/multipart.ts -> chunk 大小取 getSettingNumber(
+                                         "multipart_chunk_size", 10) * 1MB；
+                                         后端返回 50 即按 50MB 分片
+  注：<= 50MB 的文件前端自动回退 StreamUpload（1 次请求更快），
+      > 50MB 才走分片，属官方优化，不影响「每片 50MB」语义。
+
+补丁
+----
+--- a/internal/bootstrap/data/setting.go
++++ b/internal/bootstrap/data/setting.go
+@@ -369,7 +369,7 @@
+ 
+ 		// multipart upload settings (from main)
+ 		{Key: conf.MultipartEnabled, Value: "true", Type: conf.TypeBool, Group: model.TRAFFIC, Flag: model.PUBLIC},
+-		{Key: conf.MultipartChunkSize, Value: "10", Type: conf.TypeNumber, Group: model.TRAFFIC, Flag: model.PUBLIC, Help: `chunk size of multipart upload in MB ...`},
++		{Key: conf.MultipartChunkSize, Value: "50", Type: conf.TypeNumber, Group: model.TRAFFIC, Flag: model.PUBLIC, Help: `chunk size of multipart upload in MB ...`},
+ 	}
+
+--- a/server/handles/multipart.go
++++ b/server/handles/multipart.go
+@@ -27,7 +27,7 @@
+ // disk usage.
+ func multipartChunkSize(requested int64) int64 {
+-	ceiling := int64(setting.GetInt(conf.MultipartChunkSize, 10)) << 20
++	ceiling := int64(setting.GetInt(conf.MultipartChunkSize, 50)) << 20
+ 	if ceiling < multipartMinChunkSize {
+ 		ceiling = multipartMinChunkSize
+ 	}
+
+运行中实例即时生效（不重启）
+----------------------------
+  POST /api/admin/setting/save  提交两项：
+    {"key":"multipart_enabled","value":"true", ...}
+    {"key":"multipart_chunk_size","value":"50", ...}
+  内部 op/hook.go 对 MultipartChunkSize 有校验钩子，值须为正整数。
+
+实测结论
+--------
+  经网关 init 返回 chunk_size = 52428800（正好 50MB）；
+  60MB 文件分 2 片（50MB + 10MB），首片 50MB 经网关 PUT 返回 200，
+  complete 200，落地文件 sha256 与源文件完全一致。
+  => 网关可透传 50MB 请求体，无需把片大小降到 CDN 限制以下。
+
+注意
+----
+  - 每个活跃会话服务端最多在磁盘缓冲 8 个分片（50MB × 8 = 400MB），
+    并发大文件上传时需保证后端磁盘余量。
+  - 若更换到有请求体大小上限的 CDN/网关，改 multipart_chunk_size 即可，
+    无需改前端代码（前端按后端返回值分片）。

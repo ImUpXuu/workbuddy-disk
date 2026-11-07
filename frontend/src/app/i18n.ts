@@ -36,6 +36,17 @@ if (!languages.some((lang) => lang.code === initialLang)) {
   initialLang = defaultLang
 }
 
+// 旧版本只内置 en，SwitchLanguage 会把 "en" 自动写入 localStorage。
+// 补齐语言包后，对「从未显式选择过语言、且浏览器语言为中文」的用户迁移到简体中文，
+// 否则这些存量用户会一直停留在英文界面。
+if (
+  initialLang === "en" &&
+  localStorage.getItem("lang_explicit") !== "1" &&
+  userLang.startsWith("zh")
+) {
+  initialLang = "zh-CN"
+}
+
 // Type imports
 // use `type` to not include the actual dictionary in the bundle
 import type * as en from "~/lang/en/entry"

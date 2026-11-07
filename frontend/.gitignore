@@ -1,7 +1,7 @@
 node_modules
 dist
-/src/lang/*
-!/src/lang/en/
+# 语言包必须随源码入库：Vercel 从 GitHub 源码构建，官方"Crowdin 在 CI 注入翻译"的流程不适用。
+# 原官方规则 /src/lang/* 会忽略除 en 外全部语言，导致线上只有英文。
 .DS_Store
 .idea
 .test

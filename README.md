@@ -5,8 +5,8 @@
 
 | 目录 | 内容 | 部署位置 |
 | --- | --- | --- |
-| [`frontend/`](./frontend) | OpenList 官方 SolidJS 前端 v4.2.9（仅少量网关/Vercel 兼容改动） | [Vercel](https://vercel.com) → `pan.upxuu.com` |
-| [`backend-openlist/`](./backend-openlist) | Go 后端的 `?token=` 补丁与一键编译脚本 | 不部署，仅供升级复用 |
+| [`frontend/`](./frontend) | OpenList 官方 SolidJS 前端 v4.2.9（仅少量网关/Vercel 兼容改动 + 全量语言包） | [Vercel](https://vercel.com) → `pan.upxuu.com` |
+| [`backend-openlist/`](./backend-openlist) | Go 后端的 `?token=` 补丁、50MB 分片默认值补丁与一键编译脚本 | 不部署，仅供升级复用 |
 | [`backend/`](./backend) | 旧 Flask 后端（**已停用，仅留档**） | 不再启动 |
 
 后端实际运行体（二进制 + `data/`）在部署机的 `/workspace/netdisk`，不在本仓库内。
@@ -66,9 +66,10 @@ OpenList 的业务错误是 **HTTP 200 + body `{code,message,data}`**，由 `han
 | CORS 预检 | `OPTIONS` 经网关返回 `204`，`allow-origin/headers/methods = *` |
 | 列目录 | `POST /api/fs/list?token=` 经网关 `200`，正确返回根目录文件与中文目录 |
 | 普通上传 | `PUT /api/fs/put?token=` + `File-Path` 头经网关 `200`，文件正确落地 |
-| 分片上传 | 11 MB / 两片经网关 `init → chunk×2 → complete` 全 `200`，sha256 一致；`abort` / 状态查询 / 重传正常 |
+| 分片上传 | 11 MB / 两片、60 MB / **50MB + 10MB** 两片，经网关 `init → chunk×N → complete` 全 `200`，sha256 一致；`abort` / 状态查询 / 重传正常 |
 | 预览下载 | `POST /api/fs/get?token=` `200` → 签发 `/p/hello.txt?sign=...` → 经网关 `200` 返回文件正文 |
-| 浏览器 E2E | 登录 → `localStorage.token` 落库 → 列表渲染 5 个对象、进入子路由 `/hello.txt` 预览显示正文；**零 console 错误、零失败请求** |
+| 浏览器 E2E | 登录 → `localStorage.token` 落库 → 列表渲染、进入子路由预览显示正文；**零 console 错误、零失败请求** |
+| 多语言 | 中文浏览器自动中文、旧版存量 `lang=en` 自动迁移、显式选过的语言保持不变、英文浏览器英文；四种场景零报错 |
 
 > **下载为何不需要 token**：OpenList 的 `/d/`、`/p/` 下载路由走后端签发的 `sign` 查询参数
 > （由 `fs/get` 用 `?token=` 鉴权后返回），不依赖 `Authorization` 头，因此天然免疫网关覆盖头。
@@ -101,21 +102,49 @@ OpenList 的业务错误是 **HTTP 200 + body `{code,message,data}`**，由 `han
 
 ---
 
-## 分片上传（原生能力，零改动）
+## 分片上传（默认开启，每片 50MB）
 
-Go 后端原生提供 `/api/fs/multipart/{init,chunk,complete,status,abort}`，默认
-`multipart_enabled=true`、`multipart_chunk_size=10`（MB），二者都是 PUBLIC 设置，可在管理页
-**设置 → 流量** 修改。前端 `src/pages/home/uploads/uploads.ts` 的默认上传器即 `Multipart`。
+Go 后端原生提供 `/api/fs/multipart/{init,chunk,complete,status,abort}`。本项目把
+`multipart_enabled=true`、`multipart_chunk_size=50`（MB）**固化进源码默认值**
+（见 [`backend-openlist/patches/multipart-chunk-50.patch`](./backend-openlist/patches/multipart-chunk-50.patch)，
+由 `build.sh` 的 2.6 段幂等应用），因此**重建后端或清空数据后无需管理员手动设置即自动生效**；
+运行中实例也已通过 `POST /api/admin/setting/save` 即时设为 50。二者都是 PUBLIC 设置，
+管理页 **设置 → 流量** 仍可随时调整。前端 `src/pages/home/uploads/uploads.ts` 的默认上传器
+即 `Multipart`，片大小按后端返回值计算，**无需改前端代码**。
 
-- 文件 ≤ `multipart_chunk_size`、或 `init` 返回 `data:null`（驱动不支持会话分片）时自动回退 `StreamUpload`。
+- 文件 ≤ `multipart_chunk_size`、或 `init` 返回 `data:null`（驱动不支持会话分片）时自动回退 `StreamUpload`
+  （1 次请求更快）。即 ≤50MB 走流式，>50MB 才按 50MB 分片，属官方优化。
 - 上传对话框**不要勾选 sidecars**，否则 `effectiveUploader()` 会强制切到 Stream。
 - **实测（2026-11-07）**：CloudStudio 网关**只覆盖 `Authorization` 头**，其余自定义头
   （`File-Path` / `X-Upload-Id` / `X-Chunk-Index` / `X-File-Size` / `X-Chunk-Size` / `Overwrite` 等）
   与 query 参数全部可靠透传 → 原生 multipart 协议可直接使用，**无需** query→Header 还原补丁。
-- 端到端实测：11 MB 文件（10 MB + 1 MB 两片）经网关 `init → chunk×2 → complete` 全部 `200`，
-  落地文件大小与 **sha256 完全一致**；`abort`、状态查询、重传路径亦正常。
+- 端到端实测：11 MB 文件（10 MB + 1 MB 两片）、以及调成 50MB 后的 60 MB 文件
+  （`init` 回显 `chunk_size=52428800`，50 MB + 10 MB 两片）经网关 `init → chunk×2 → complete`
+  全部 `200`，落地文件大小与 **sha256 完全一致**；`abort`、状态查询、重传路径亦正常。
   后端对每片长度有严格校验（少发会返回 `incomplete chunk ... EOF` 并拒绝 `complete`）。
-- 网关若有请求体大小上限，把 `multipart_chunk_size` 调小（如 2 / 4 MB）即可。
+  **50MB 单片经网关 PUT 返回 200**，说明网关可透传 50MB 请求体，无需降级片大小。
+- 每个活跃会话服务端最多在磁盘缓冲 8 个分片（50MB × 8 = 400MB），并发大文件上传时需留足后端磁盘余量。
+- 若更换到有请求体大小上限的 CDN/网关，只需调小 `multipart_chunk_size`，前端会自动按后端返回值重新分片。
+
+---
+
+## 多语言（简体中文等 23 种）
+
+官方前端源码树**只保留 `en`**，其他语言由发版流程用 Crowdin 注入到构建产物；
+Vercel 从 GitHub 源码构建时拿不到这些注入文件，因此线上曾只有英文。
+
+修复方式：从官方 npm 包 `@openlist-frontend/openlist-frontend@4.2.9` 的
+`dist/i18n.tar.gz`（可经 jsDelivr CDN 直接取，无需整包下载）解出全部 **23 种语言**放入
+`src/lang/`，并**移除 `frontend/.gitignore` 里官方的 `/src/lang/*` 忽略规则**——否则语言包不入库，
+Vercel 构建时仍只有 en。`src/app/i18n.ts` 用 `import.meta.glob("~/lang/*/index.json")`
+自动发现语言，新增目录即自动出现在语言菜单，并为每种语言生成独立 lazy chunk。
+`zh-CN` 覆盖率约 96%，缺失键回退英文。
+
+默认语言逻辑同步修正（`i18n.ts` / `SwitchLanguage.tsx`）：
+
+- 中文浏览器首次访问**自动中文**；
+- 旧版写入的 `lang=en` 会**自动迁移到中文**（用 `lang_explicit` 标记区分，避免覆盖用户主动选择）；
+- 用户显式选过的语言保持不变，英文浏览器仍为英文。
 
 ---
 
@@ -152,6 +181,8 @@ VITE_API_URL = https://<后端域名>.app.workbuddy.host
 - `index.html` 中 `window.OPENLIST_CONFIG.cdn` 与 `window.__dynamic_base__` **必须保持空字符串**，
   绝不能设成 `"/"`——会拼出 `//assets/x.js` 协议相对 URL 导致白屏。
 - `index.html` 的 `window.OPENLIST_CONFIG.api` 保持 `undefined`，作为部署期可覆盖的注入点。
+- 语言包随源码入库，Vercel 构建时会为 23 种语言各生成 lazy chunk；**不要**在 Vercel 上依赖
+  官方的 Crowdin 注入流程（本项目未接入）。
 
 ---
 
@@ -191,14 +222,22 @@ DEV_PROXY_TARGET=http://127.0.0.1:8000 pnpm dev
 
 ## 升级复用
 
-`backend-openlist/build.sh` 会对指定版本的 Go 源码重新打 `?token=` 补丁并编译：
+`backend-openlist/build.sh` 会对指定版本的 Go 源码重新打补丁并编译：
 
 ```bash
 bash backend-openlist/build.sh v4.2.9     # 省略版本默认 v4.2.9
 ```
 
-补丁落点固定为 `server/middlewares/auth.go` 的 `Auth` / `Authn` 两处（及可选的 `LogOut`）。
+脚本幂等，依次应用：
+
+1. `?token=` query 优先鉴权补丁 → `server/middlewares/auth.go` 的 `Auth` / `Authn`（及可选 `LogOut`）；
+2. 分片默认值 → `internal/bootstrap/data/setting.go` 的 `multipart_chunk_size` 10MB→50MB，
+   以及 `server/handles/multipart.go` 的 fallback 值（见 `patches/multipart-chunk-50.patch`）；
+3. 生成 `public/dist/index.html` 占位（前后端分离时 `initIndex()` 仍要求该文件存在）。
+
 编译需要 Go ≥ `go.mod` 要求（v4.2.9 为 `go 1.26.0` / `toolchain go1.27.3`）与 gcc（CGO，sqlite 驱动）。
+沙箱内 `proxy.golang.org` 不可达，脚本默认使用 `mirrors.tencent.com/go` + `goproxy.cn` 镜像；
+`GOROOT` 必须显式指向新工具链（环境里被写死成 `/usr/local/go` 的旧版本）。
 
 ---
 

@@ -23,15 +23,13 @@ export const SwitchLanguage = <C extends ElementType = "button">(
   const switchLang = async (lang: Lang) => {
     setCurrentLang(lang)
     localStorage.setItem("lang", lang)
+    // 标记「用户显式选择过语言」，避免后续被默认语言迁移逻辑覆盖
+    localStorage.setItem("lang_explicit", "1")
   }
 
-  if (!localStorage.getItem("lang")) {
-    switchLang(
-      languages.find((l) => l.code === navigator.language)
-        ? navigator.language
-        : "en",
-    )
-  }
+  // 不再在挂载时自动把 localStorage.lang 写成 "en"：
+  // i18n.ts 的 initialLang 已按浏览器语言做了更宽松的匹配（含中文回退），
+  // 这里若强行覆盖会把中文用户锁死在英文。
 
   return (
     <>

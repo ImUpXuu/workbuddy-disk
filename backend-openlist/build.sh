@@ -76,6 +76,31 @@ fi
 # 2.5) gofmt 规整补丁缩进（Auth 在闭包内需 2 层、Authn 需 1 层，统一交给 gofmt）
 gofmt -w "$AUTH" "$LOGOUT" 2>/dev/null || true
 
+# 2.6) 分片上传：默认开启 + 每片 50MB（固化进源码默认值，幂等）
+#  官方默认 multipart_enabled=true / multipart_chunk_size=10。把片大小写进
+#  InitialSettings 默认值，重建后端或清空数据后无需管理员手动设置即自动生效。
+SETTING="$SRC/internal/bootstrap/data/setting.go"
+MPH="$SRC/server/handles/multipart.go"
+python3 - "$SETTING" "$MPH" <<'PY'
+import sys
+from pathlib import Path
+s = Path(sys.argv[1]); c = s.read_text()
+old = '{Key: conf.MultipartChunkSize, Value: "10"'
+new = '{Key: conf.MultipartChunkSize, Value: "50"'
+if old in c:
+    s.write_text(c.replace(old, new, 1)); print("==> setting.go 默认片大小 10MB -> 50MB")
+elif new not in c:
+    sys.exit("!! setting.go 默认值未匹配（上游版本变化？）")
+m = Path(sys.argv[2]); t = m.read_text()
+old2 = 'setting.GetInt(conf.MultipartChunkSize, 10)'
+new2 = 'setting.GetInt(conf.MultipartChunkSize, 50)'
+if old2 in t:
+    m.write_text(t.replace(old2, new2, 1)); print("==> multipart.go fallback 10MB -> 50MB")
+elif new2 not in t:
+    sys.exit("!! multipart.go fallback 未匹配（上游版本变化？）")
+print("==> 分片默认值已固化为 enabled=true / 50MB")
+PY
+
 # 3) dist 占位：dist_dir 非空时 initIndex() 仍会 static.Open("index.html")，
 #    缺 index.html 会 Fatal 退出，必须放一个最小 index.html（前后端分离，前端由 Vercel 提供）。
 #    同时官方源码 public/dist 自带 README.md 供 //go:embed all:dist 用（缺则补）。
