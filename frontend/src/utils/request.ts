@@ -15,11 +15,19 @@ instance.interceptors.request.use(
   (config) => {
     // CloudStudio 网关会把 Authorization 请求头覆盖成它自己的失效 token，
     // 但 query 参数能可靠透传。后端 server/middlewares/auth.go 已改为
-    // 「?token= 有值就优先覆盖头」（网关塞的头非空，不能用"仅头为空才读 query"），
-    // 故把登录 token 同时塞进 params，保证经网关直连时仍能鉴权（本地直连仍可用头）。
-    const token = localStorage.getItem("token")
-    if (token) {
-      config.params = { ...(config.params || {}), token }
+    // 「query 里出现 token 键就优先覆盖头」，所以每次请求都要显式声明身份：
+    //   - 已登录：?token=<JWT>
+    //   - 游客：  ?token=（空串），把网关注入的脏头清空，让后端按游客处理
+    // 未登录时若不带上这个空 token，后端会拿网关的失效头去 ParseToken 并
+    // 返回 401，前端守卫就把游客弹到登录页（guest 明明开着也进不去）。
+    // 业务自己传了 token 参数时保持原样，避免覆盖 WebDAV/下载等自定义鉴权。
+    const token = localStorage.getItem("token") || ""
+    if (config.params instanceof URLSearchParams) {
+      if (!config.params.has("token")) config.params.set("token", token)
+    } else {
+      const params = { ...(config.params || {}) } as Record<string, unknown>
+      if (!("token" in params)) params.token = token
+      config.params = params
     }
     return config
   },

@@ -6,7 +6,7 @@
 | 目录 | 内容 | 部署位置 |
 | --- | --- | --- |
 | [`frontend/`](./frontend) | OpenList 官方 SolidJS 前端 v4.2.9（仅少量网关/Vercel 兼容改动 + 全量语言包） | [Vercel](https://vercel.com) → `pan.upxuu.com` |
-| [`backend-openlist/`](./backend-openlist) | Go 后端的 `?token=` 补丁、50MB 分片默认值补丁与一键编译脚本 | 不部署，仅供升级复用 |
+| [`backend-openlist/`](./backend-openlist) | Go 后端的定制鉴权中间件（`?token=` 优先 + 游客降级）、50MB 分片默认值、服务器状态接口与一键编译脚本 | 不部署，仅供升级复用 |
 | [`backend/`](./backend) | 旧 Flask 后端（**已停用，仅留档**） | 不再启动 |
 
 后端实际运行体（二进制 + `data/`）在部署机的 `/workspace/netdisk`，不在本仓库内。
@@ -34,25 +34,35 @@
 
 ---
 
-## 为什么用 `?token=`（网关兼容，query 优先）
+## 为什么用 `?token=`（网关兼容）+ 游客为何能直接进
 
 实测 CloudStudio 预览网关的行为不是"剥离头"，而是**把 `Authorization` 请求头覆盖成它自己的一个失效 token**：
-本地直连带 `Authorization` 或 `?token=` 都 200，但经网关时无论带头、带 `?token=`、甚至完全不带凭证，
-都返回 `{"code":401,"message":"token is invalidated"}`。同时**任意 query 参数都能可靠透传**
-（`/api/public/settings?任意key=值` 全部 200）。
+经网关的请求，无论客户端带头、带 `?token=`、甚至完全不带凭证，后端看到的都是一个非空但无效的
+`Authorization`；而**任意 query 参数都能可靠透传**。
 
-而 OpenList Go 后端 `server/middlewares/auth.go` 的 `Auth` / `Authn` 只读
-`c.GetHeader("Authorization")`，拿到网关覆盖的失效头就必然 401。
+OpenList Go 后端 `server/middlewares/auth.go` 的 `Auth` / `Authn` 只读
+`c.GetHeader("Authorization")`，于是出现两类问题：
 
-因此做了两处最小改动（见 [`backend-openlist/patches/token-from-query.patch`](./backend-openlist/patches/token-from-query.patch)）：
+1. 已登录用户：网关的失效头盖掉真实 token → 401；
+2. **游客（guest 已开启）**：后端把网关塞的脏头当成「登录态但 token 无效」直接 401，前端 `MustUser`
+   守卫看到 401 就 `bus.emit("to", "/@login?...")`，表现为「明明开了 guest 还是被弹到登录页」；
+   点「使用游客」回到首页后再次 401，形成来回重定向。本地直连无网关时 `/api/me` 正常返回
+   `200 guest`，所以问题只在经网关时暴露。
+
+修复方式：用 [`backend-openlist/files/auth.go`](./backend-openlist/files/auth.go) **整体覆盖**官方同名文件
+（差异留档于 `patches/token-from-query.patch` 与 `patches/guest-fallback.patch`，由 `build.sh` 编译时安装）：
 
 | 侧 | 改动 |
 | --- | --- |
-| 后端 | `server/middlewares/auth.go` 的 `Auth` / `Authn` 两处各加 3 行：`if q := c.Query("token"); q != "" { token = q }`——**query 优先覆盖头**（不能写成"仅头为空才读 query"，因为网关塞的头非空）；`server/handles/auth.go` 的 `LogOut` 同样兼容 |
-| 前端 | `src/utils/request.ts` 请求拦截器把 `localStorage.token` 注入 `config.params`，axios 自动序列化成 `?token=` |
+| 后端 | ① `requestToken()`：`?token=` 只要**出现**（含空串）就覆盖 Header，空串即「我是游客」，把网关脏头清空；② `fallbackOrAbort()`：token 解析 / 校验失败且 guest 未禁用时**降级为游客**而非 401；guest 被禁用或后端异常时仍返回 401 / 500；③ `server/handles/auth.go` 的 `LogOut` 同样兼容 `?token=` |
+| 前端 | `src/utils/request.ts` 请求拦截器**每次请求都注入** `token` 参数：已登录为 JWT，未登录为空串（显式声明游客身份）；业务自带 `token` 参数时不覆盖 |
 
-`Authorization` 默认头保留不改（本地直连仍可用），但后端以 `?token=` 为准，因此经网关也能正确鉴权。
-OpenList 的业务错误是 **HTTP 200 + body `{code,message,data}`**，由 `handle_resp.ts` 按 `resp.code` 判断（含 401 跳登录），不受影响。
+`Authorization` 默认头保留不改（本地直连仍可用），后端以 `?token=` 为准。
+OpenList 的业务错误是 **HTTP 200 + body `{code,message,data}`**，由 `handle_resp.ts` 按 `resp.code`
+判断（含 401 跳登录），不受影响。
+
+**安全性**：降级只会得到 `guest` 身份，`/api/admin/*` 后还有 `AuthAdmin` 拦截（实测游客访问状态接口返回
+`403 You are not an admin`），不存在提权；游客访问 `/@manage/*` 仍会跳登录页，这是预期行为。
 
 ---
 
@@ -62,13 +72,14 @@ OpenList 的业务错误是 **HTTP 200 + body `{code,message,data}`**，由 `han
 
 | 环节 | 实测结果 |
 | --- | --- |
-| 网关鉴权 | 本地 / 经网关 `GET /api/me?token=` 均 `200 admin`；经网关不带 token 返回 `401 token is invalidated` |
+| 网关鉴权 | 本地 / 经网关 `GET /api/me?token=<有效>` 均 `200 admin`；经网关不带 token（游客）返回 `200 guest`；`/api/admin/server/status` 游客 `403`、管理员 `200` |
 | CORS 预检 | `OPTIONS` 经网关返回 `204`，`allow-origin/headers/methods = *` |
 | 列目录 | `POST /api/fs/list?token=` 经网关 `200`，正确返回根目录文件与中文目录 |
 | 普通上传 | `PUT /api/fs/put?token=` + `File-Path` 头经网关 `200`，文件正确落地 |
 | 分片上传 | 11 MB / 两片、60 MB / **50MB + 10MB** 两片，经网关 `init → chunk×N → complete` 全 `200`，sha256 一致；`abort` / 状态查询 / 重传正常 |
 | 预览下载 | `POST /api/fs/get?token=` `200` → 签发 `/p/hello.txt?sign=...` → 经网关 `200` 返回文件正文 |
 | 浏览器 E2E | 登录 → `localStorage.token` 落库 → 列表渲染、进入子路由预览显示正文；**零 console 错误、零失败请求** |
+| 游客访问 | 线上 `pan.upxuu.com` / 本地新前端 / 浏览器残留失效 token / 点「使用游客」四种场景均**停在首页不跳登录页**，`/api/me` 为 `200 guest`、文件列表正常渲染、零 console 错误 |
 | 多语言 | 中文浏览器自动中文、旧版存量 `lang=en` 自动迁移、显式选过的语言保持不变、英文浏览器英文；四种场景零报错 |
 
 > **下载为何不需要 token**：OpenList 的 `/d/`、`/p/` 下载路由走后端签发的 `sign` 查询参数
